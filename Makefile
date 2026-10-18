@@ -20,8 +20,14 @@ KUBE_VERSION ?= 1.36.0
 CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
 KUBECONFORM := kubeconform -strict -summary -kubernetes-version $(KUBE_VERSION) -schema-location default -schema-location '$(CRD_SCHEMAS)'
 
+# Only this source may reach the ALB. Defaults to your current public IP;
+# override with INGRESS_CIDR=a.b.c.d/32. Never committed: the repo is public.
+INGRESS_CIDR ?= $(shell curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')/32
+# lint/template/validate render with a documentation-range placeholder.
+RENDER_SET := --set 'ingress.inboundCIDRs={203.0.113.10/32}'
+
 .PHONY: help tidy fmt build vet test check clean db-schema db-seed $(addprefix run-,$(SERVICES)) \
-	chart-sql helm-deps helm-lint helm-template helm-validate deploy port-forward test-api
+	chart-sql helm-deps helm-lint helm-template helm-validate deploy platform-lbc port-forward test-api
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -66,21 +72,36 @@ helm-deps: ## Fetch the pinned postgresql/redis subcharts
 	helm dependency update $(CHART)
 
 helm-lint: chart-sql ## helm lint, with and without ServiceMonitors
-	helm lint $(CHART)
-	helm lint $(CHART) --set serviceMonitor.enabled=true
+	helm lint $(CHART) $(RENDER_SET)
+	helm lint $(CHART) $(RENDER_SET) --set serviceMonitor.enabled=true
 
 helm-template: chart-sql ## Render the chart to stdout
-	@helm template $(RELEASE) $(CHART) -n $(NAMESPACE)
+	@helm template $(RELEASE) $(CHART) -n $(NAMESPACE) $(RENDER_SET)
 
 helm-validate: helm-lint ## Render and validate with kubeconform (strict), incl. ServiceMonitor CRDs
-	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) | $(KUBECONFORM)
-	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) --set serviceMonitor.enabled=true | $(KUBECONFORM)
+	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) $(RENDER_SET) | $(KUBECONFORM)
+	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) $(RENDER_SET) --set serviceMonitor.enabled=true | $(KUBECONFORM)
 
-deploy: helm-validate ## Validate, then install/upgrade the release into $(NAMESPACE) and wait for it
+deploy: helm-validate ## Validate, then install/upgrade into $(NAMESPACE); ALB restricted to INGRESS_CIDR
+	@case "$(INGRESS_CIDR)" in /32) echo "Could not detect your public IP; pass INGRESS_CIDR=a.b.c.d/32" >&2; exit 1;; esac
+	@echo "ALB inbound restricted to $(INGRESS_CIDR)"
 	helm dependency build $(CHART)
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install $(RELEASE) $(CHART) -n $(NAMESPACE) --wait --timeout 10m
-	kubectl -n $(NAMESPACE) get pods
+	helm upgrade --install $(RELEASE) $(CHART) -n $(NAMESPACE) --wait --timeout 10m \
+		--set 'ingress.inboundCIDRs={$(INGRESS_CIDR)}'
+	kubectl -n $(NAMESPACE) get pods,ingress
+
+LBC_VERSION := 3.6.0
+LBC_DIR     := platform/aws-load-balancer-controller
+
+platform-lbc: ## Validate, then install/upgrade the AWS Load Balancer Controller (IRSA) in kube-system
+	helm repo add eks https://aws.github.io/eks-charts --force-update >/dev/null
+	kubeconform -strict -summary -kubernetes-version $(KUBE_VERSION) $(LBC_DIR)/serviceaccount.yaml
+	helm template aws-load-balancer-controller eks/aws-load-balancer-controller --version $(LBC_VERSION) \
+		-n kube-system -f $(LBC_DIR)/values.yaml --include-crds | $(KUBECONFORM) -skip CustomResourceDefinition
+	kubectl apply -f $(LBC_DIR)/serviceaccount.yaml
+	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller --version $(LBC_VERSION) \
+		-n kube-system -f $(LBC_DIR)/values.yaml --wait --timeout 5m
 
 port-forward: ## Forward the gateway Service to localhost:8080 (for test-api)
 	kubectl -n $(NAMESPACE) port-forward svc/$(RELEASE)-gateway 8080:8080

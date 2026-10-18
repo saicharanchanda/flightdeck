@@ -13,7 +13,31 @@ aws iam create-open-id-connect-provider \
   --client-id-list sts.amazonaws.com
 ```
 
-No role trusts it yet.
+Trusted by the AWS Load Balancer Controller role below.
+
+## AWS Load Balancer Controller (IRSA)
+
+| Resource | Value |
+|---|---|
+| Policy | `arn:aws:iam::259828990969:policy/eks-practice-AWSLoadBalancerController` — the official [`iam_policy.json` at v3.6.0](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.0/docs/install/iam_policy.json): [`aws-load-balancer-controller-policy.v3.6.0.json`](aws-load-balancer-controller-policy.v3.6.0.json) |
+| Role | `arn:aws:iam::259828990969:role/eks-practice-aws-load-balancer-controller` |
+| Trust policy | [`aws-load-balancer-controller-trust-policy.json`](aws-load-balancer-controller-trust-policy.json) — the cluster OIDC provider, `sub` = `system:serviceaccount:kube-system:aws-load-balancer-controller`, `aud` = `sts.amazonaws.com` |
+| ServiceAccount | [`platform/aws-load-balancer-controller/serviceaccount.yaml`](../../platform/aws-load-balancer-controller/serviceaccount.yaml) (role-arn annotation) |
+
+```bash
+aws iam create-policy --policy-name eks-practice-AWSLoadBalancerController \
+  --policy-document file://infra/iam/aws-load-balancer-controller-policy.v3.6.0.json
+aws iam create-role --role-name eks-practice-aws-load-balancer-controller \
+  --assume-role-policy-document file://infra/iam/aws-load-balancer-controller-trust-policy.json
+aws iam attach-role-policy --role-name eks-practice-aws-load-balancer-controller \
+  --policy-arn arn:aws:iam::259828990969:policy/eks-practice-AWSLoadBalancerController
+# Subnets the controller may place internet-facing ALBs in:
+aws ec2 create-tags --resources subnet-0a1941b4dfdc5991a subnet-0d4961f49d7549fe9 \
+  subnet-0ae45884493a1c0c1 subnet-0308db969f1aa66c2 subnet-01682c81c587baf9c \
+  --tags Key=kubernetes.io/role/elb,Value=1
+```
+
+See [`docs/identity.md`](../../docs/identity.md) for IRSA vs Pod Identity.
 
 ## EBS CSI driver (EKS Pod Identity)
 

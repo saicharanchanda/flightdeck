@@ -28,7 +28,8 @@ Chart (`charts/flightdeck`):
 | `helm-lint` | `helm lint`, with and without ServiceMonitors |
 | `helm-template` | Render the release to stdout |
 | `helm-validate` | Render and run `kubeconform -strict` against Kubernetes 1.36, ServiceMonitor CRDs included |
-| `deploy` | `helm-validate`, then create the `flightdeck` namespace if needed and `helm upgrade --install --wait` |
+| `deploy` | `helm-validate`, then create the `flightdeck` namespace if needed and `helm upgrade --install --wait`. The ALB only admits `INGRESS_CIDR` (default: your current public IP) |
+| `platform-lbc` | Validate and install the AWS Load Balancer Controller 3.6.0 (IRSA) from `platform/aws-load-balancer-controller/` |
 | `port-forward` | Forward the gateway Service to `localhost:8080` |
 | `test-api` | Smoke-test every gateway endpoint at `BASE_URL` (default `http://localhost:8080`) |
 

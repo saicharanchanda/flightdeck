@@ -102,6 +102,16 @@ serviceMonitor:
   labels:
     release: kube-prometheus-stack
 
+# Public entry point: an internet-facing ALB (AWS Load Balancer Controller)
+# in front of the gateway. inboundCIDRs is deliberately empty here — the
+# repo is public — and the template refuses to render without it, so the
+# ALB is never accidentally open. `make deploy` passes your current IP.
+ingress:
+  enabled: true
+  loadBalancerName: flightdeck
+  inboundCIDRs: []
+  allowAllSources: false
+
 # Only the gateway accepts traffic from outside the namespace. The metrics
 # namespace may additionally reach the services' http port for scraping.
 # Enforcement requires the VPC CNI network policy agent to be enabled.

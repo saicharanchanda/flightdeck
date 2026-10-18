@@ -1,0 +1,27 @@
+# eks/aws-load-balancer-controller 3.6.0 (controller v3.6.0), release
+# "aws-load-balancer-controller" in kube-system.
+#   kubectl apply -f platform/aws-load-balancer-controller/serviceaccount.yaml
+#   helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+#     --version 3.6.0 -n kube-system -f platform/aws-load-balancer-controller/values.yaml
+
+clusterName: eks-practice
+region: us-east-1
+vpcId: vpc-082e23e2d25f57a8c # set explicitly so the controller never needs IMDS
+
+# IRSA: the ServiceAccount (with the role annotation) is created from
+# serviceaccount.yaml, not by this chart.
+serviceAccount:
+  create: false
+  name: aws-load-balancer-controller
+
+# Two replicas: the controller also serves admission webhooks, so a single
+# replica being rescheduled would briefly block Service/Ingress changes.
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi

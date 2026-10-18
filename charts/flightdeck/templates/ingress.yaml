@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled }}
+{{- if and (empty .Values.ingress.inboundCIDRs) (not .Values.ingress.allowAllSources) }}
+{{- fail "ingress.inboundCIDRs is empty, which would open the ALB to the internet. Set it (make deploy passes your current IP) or set ingress.allowAllSources=true." }}
+{{- end }}
+{{- $gateway := include "flightdeck.serviceName" (dict "root" . "name" "gateway") }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $gateway }}
+  labels:
+    {{- include "flightdeck.labels" . | nindent 4 }}
+    {{- include "flightdeck.selectorLabels" (dict "root" . "name" "gateway") | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/load-balancer-name: {{ .Values.ingress.loadBalancerName | quote }}
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # Register pod IPs directly (VPC CNI); no NodePort hop.
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+    alb.ingress.kubernetes.io/success-codes: "200"
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    # Shorter than the pod's preStop sleep + 10s drain, so deregistration
+    # finishes before the process exits.
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=15
+    {{- if .Values.ingress.inboundCIDRs }}
+    # The controller-managed ALB security group only admits these sources.
+    alb.ingress.kubernetes.io/inbound-cidrs: {{ join "," .Values.ingress.inboundCIDRs | quote }}
+    {{- end }}
+    alb.ingress.kubernetes.io/tags: project=flightdeck,cluster=eks-practice
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $gateway }}
+                port:
+                  name: http
+{{- end }}

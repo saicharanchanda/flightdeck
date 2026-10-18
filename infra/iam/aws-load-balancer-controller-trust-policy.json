@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowIrsaForLoadBalancerController",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::259828990969:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/56A61AD165D68728B7CDADBC450B2B0B"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.us-east-1.amazonaws.com/id/56A61AD165D68728B7CDADBC450B2B0B:sub": "system:serviceaccount:kube-system:aws-load-balancer-controller",
+          "oidc.eks.us-east-1.amazonaws.com/id/56A61AD165D68728B7CDADBC450B2B0B:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
