@@ -1,0 +1,16 @@
+# Cluster-default StorageClass backed by the aws-ebs-csi-driver addon.
+# gp2 (in-tree provisioner) has its default annotation set to "false".
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  fsType: ext4
+  encrypted: "true"
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
