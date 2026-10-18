@@ -8,7 +8,8 @@
 #     --from-literal=admin-user=admin --from-literal=admin-password='<choose one>'
 #
 # Every container has requests and limits. Steady-state requests for the
-# whole release: ~460m CPU / ~1088Mi (Prometheus 210m/544Mi incl. reloader).
+# whole release: ~460m CPU / ~1344Mi (Prometheus 210m/544Mi incl. reloader,
+# Grafana 120m/544Mi incl. sidecars).
 
 # --- Control plane: EKS doesn't expose these, so their targets would be
 # permanently DOWN and their alerts would fire forever.
@@ -116,21 +117,23 @@ grafana:
     enabled: false
   testFramework:
     enabled: false
+  # Grafana 13 with the default dashboards idles at ~360Mi; a 384Mi limit
+  # was OOMKilled. Request = observed usage, limit = ~2x headroom.
   resources:
     requests:
       cpu: 100m
-      memory: 192Mi
+      memory: 384Mi
     limits:
       cpu: 500m
-      memory: 384Mi
+      memory: 768Mi
   # The dashboard/datasource sidecars list every matching ConfigMap/Secret
-  # cluster-wide at startup; 96Mi was OOMKilled on that burst. The limit has
-  # headroom; the request (what the scheduler reserves) stays small.
+  # cluster-wide at startup; 96Mi was OOMKilled on that burst. They idle at
+  # ~77Mi.
   sidecar:
     resources:
       requests:
         cpu: 10m
-        memory: 48Mi
+        memory: 80Mi
       limits:
         cpu: 50m
         memory: 192Mi
