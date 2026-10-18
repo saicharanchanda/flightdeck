@@ -8,7 +8,14 @@ It only accepts the source CIDR passed at deploy time (`make deploy` /
 `make platform-monitoring` use your current public IP). If your IP changes,
 redeploy, or requests time out at the security group.
 
-## Public, via the ALB
+`.\scripts\open-consoles.ps1` opens every browser-friendly URL below: the ALB
+ones directly, the rest after starting their port-forwards in separate windows.
+`.\scripts\close-consoles.ps1` stops the forwards.
+
+## Public — through the ALB (no port-forward)
+
+Only the gateway and Grafana are routed by the ALB. Reachable from the
+allowed source IP only.
 
 | URL | What | Backend |
 |---|---|---|
@@ -18,24 +25,34 @@ redeploy, or requests time out at the security group.
 | `http://flightdeck-1333631130.us-east-1.elb.amazonaws.com/healthz`, `/readyz`, `/metrics` | Gateway probes and metrics | gateway |
 | `http://flightdeck-1333631130.us-east-1.elb.amazonaws.com/grafana/` | Grafana | `monitoring/kube-prometheus-stack-grafana` |
 
-## Local, via port-forward
+## Port-forward only — not reachable from outside the cluster
 
-`.\scripts\open-consoles.ps1` starts the first three in their own windows and
-opens them; `.\scripts\close-consoles.ps1` stops them. Or use the `make` targets.
+These have no Ingress. They work only while a `kubectl port-forward` is
+running on your machine; `open-consoles.ps1` starts the ones marked ✓.
 
-| URL | What | Command |
-|---|---|---|
-| <http://localhost:9090> | Prometheus (targets, rules, query) | `make prometheus-ui` |
-| <http://localhost:9093> | Alertmanager | `kubectl -n monitoring port-forward svc/kube-prometheus-stack-alertmanager 9093:9093` |
-| <http://localhost:3000/grafana/> | Grafana (served under `/grafana/`) | `make grafana-ui` |
-| <http://localhost:8080> | Gateway, bypassing the ALB (for `make test-api`) | `make port-forward` |
-| <http://localhost:3100/ready> | Loki API (normally used through Grafana → Explore → Loki) | `kubectl -n monitoring port-forward svc/loki 3100:3100` |
+| URL | What | Forward | Started by open-consoles |
+|---|---|---|---|
+| <http://localhost:9090> | Prometheus (targets, rules, query) | `-n monitoring svc/kube-prometheus-stack-prometheus 9090:9090` (`make prometheus-ui`) | ✓ |
+| <http://localhost:9093> | Alertmanager | `-n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093` | ✓ |
+| <http://localhost:3000/grafana/> | Grafana, bypassing the ALB (served under `/grafana/`) | `-n monitoring svc/kube-prometheus-stack-grafana 3000:80` (`make grafana-ui`) | ✓ |
+| <http://localhost:8081/flights> | flights service directly: `/flights`, `/flights/{id}`, `/healthz`, `/readyz` | `-n flightdeck svc/flightdeck-flights 8081:8081` | ✓ |
+| <http://localhost:8081/metrics> | flights metrics | (same forward) | ✓ |
+| <http://localhost:8082/metrics> | notifier metrics (`notifications_processed_total`, `notification_queue_depth`); also `/healthz`, `/readyz` | `-n flightdeck svc/flightdeck-notifier 8082:8082` | ✓ |
+| <http://localhost:8080> | Gateway, bypassing the ALB (for `make test-api`) | `-n flightdeck svc/flightdeck-gateway 8080:8080` (`make port-forward`) | — |
+| <http://localhost:3100/ready> | Loki API (normally used through Grafana → Explore → Loki) | `-n monitoring svc/loki 3100:3100` | — |
 
-## Cluster-internal only
+Chaos endpoints (`/chaos/latency?ms=`, `/chaos/errors?rate=`, `/chaos/reset`)
+exist on every service only when `config.chaosEnabled=true`; they return 404
+otherwise.
+
+## In-cluster addresses
+
+What the services use to reach each other (Service DNS, port).
 
 | Address | What |
 |---|---|
-| `flightdeck-flights.flightdeck:8081` | flights service (`/flights`, `/flights/{id}`) |
+| `flightdeck-gateway.flightdeck:8080` | gateway (the ALB targets its pod IPs directly) |
+| `flightdeck-flights.flightdeck:8081` | flights service — the gateway's `FLIGHTS_URL` |
 | `flightdeck-notifier.flightdeck:8082` | notifier admin port: probes, metrics, chaos |
 | `flightdeck-postgresql.flightdeck:5432` | Postgres (credentials: Secret `flightdeck/flightdeck-db`) |
 | `flightdeck-redis-master.flightdeck:6379` | Redis (password: Secret `flightdeck/flightdeck-db`, key `redis-password`) |

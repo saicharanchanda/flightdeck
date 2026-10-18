@@ -4,15 +4,19 @@
 
 .DESCRIPTION
   Closes the windows recorded in $env:TEMP\flightdeck-consoles.json, then
-  kills any remaining `kubectl port-forward` for the three monitoring
-  Services (e.g. if a window was started by hand or the state file is gone).
+  kills any remaining `kubectl port-forward` for the same Services (e.g. if
+  a window was started by hand or the state file is gone).
 #>
 $stateFile = Join-Path $env:TEMP 'flightdeck-consoles.json'
-$services = 'kube-prometheus-stack-prometheus', 'kube-prometheus-stack-alertmanager', 'kube-prometheus-stack-grafana'
+$services = 'kube-prometheus-stack-prometheus', 'kube-prometheus-stack-alertmanager', 'kube-prometheus-stack-grafana',
+            'flightdeck-flights', 'flightdeck-notifier'
 $stopped = @()
 
 if (Test-Path $stateFile) {
-    foreach ($s in @(Get-Content $stateFile -Raw | ConvertFrom-Json)) {
+    # PowerShell 5.1's ConvertFrom-Json emits a JSON array as ONE object;
+    # assigning it first lets foreach enumerate the entries.
+    $entries = Get-Content $stateFile -Raw | ConvertFrom-Json
+    foreach ($s in $entries) {
         $p = Get-Process -Id $s.Pid -ErrorAction SilentlyContinue
         if ($p -and $p.ProcessName -eq 'powershell') {
             # Child kubectl first, then the window.
