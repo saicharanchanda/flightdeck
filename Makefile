@@ -21,7 +21,7 @@ CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.G
 KUBECONFORM := kubeconform -strict -summary -kubernetes-version $(KUBE_VERSION) -schema-location default -schema-location '$(CRD_SCHEMAS)'
 
 .PHONY: help tidy fmt build vet test check clean db-schema db-seed $(addprefix run-,$(SERVICES)) \
-	chart-sql helm-deps helm-lint helm-template helm-validate
+	chart-sql helm-deps helm-lint helm-template helm-validate deploy port-forward test-api
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -75,6 +75,18 @@ helm-template: chart-sql ## Render the chart to stdout
 helm-validate: helm-lint ## Render and validate with kubeconform (strict), incl. ServiceMonitor CRDs
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) | $(KUBECONFORM)
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) --set serviceMonitor.enabled=true | $(KUBECONFORM)
+
+deploy: helm-validate ## Validate, then install/upgrade the release into $(NAMESPACE) and wait for it
+	helm dependency build $(CHART)
+	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	helm upgrade --install $(RELEASE) $(CHART) -n $(NAMESPACE) --wait --timeout 10m
+	kubectl -n $(NAMESPACE) get pods
+
+port-forward: ## Forward the gateway Service to localhost:8080 (for test-api)
+	kubectl -n $(NAMESPACE) port-forward svc/$(RELEASE)-gateway 8080:8080
+
+test-api: ## Smoke-test the gateway at BASE_URL (default http://localhost:8080)
+	BASE_URL=$${BASE_URL:-http://localhost:8080} bash scripts/test-api.sh
 
 clean: ## Remove build output
 	rm -rf $(BIN)

@@ -28,6 +28,17 @@ Chart (`charts/flightdeck`):
 | `helm-lint` | `helm lint`, with and without ServiceMonitors |
 | `helm-template` | Render the release to stdout |
 | `helm-validate` | Render and run `kubeconform -strict` against Kubernetes 1.36, ServiceMonitor CRDs included |
+| `deploy` | `helm-validate`, then create the `flightdeck` namespace if needed and `helm upgrade --install --wait` |
+| `port-forward` | Forward the gateway Service to `localhost:8080` |
+| `test-api` | Smoke-test every gateway endpoint at `BASE_URL` (default `http://localhost:8080`) |
+
+Deploy and test:
+
+```bash
+make deploy
+make port-forward   # in another terminal
+make test-api
+```
 
 ## Resource budget
 
