@@ -67,6 +67,14 @@ services:
       requests: { cpu: 25m, memory: 32Mi }
       limits: { cpu: 100m, memory: 64Mi }
 
+# Set GOMEMLIMIT on every service to this percentage of its memory limit.
+# The Go runtime ignores the cgroup memory limit (go_gc_gomemlimit_bytes
+# reads math.MaxInt64 without it), so the GC can't see how close it is to an
+# OOMKill. See docs/gameday-03-oom.md.
+goMemLimit:
+  enabled: true
+  percent: 90
+
 # Shared by every app container (pod + container security contexts).
 podSecurityContext:
   runAsNonRoot: true

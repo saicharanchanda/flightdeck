@@ -56,6 +56,13 @@ spec:
           env:
             - name: HTTP_ADDR
               value: ":{{ $svc.port }}"
+            {{- $memLimit := dig "resources" "limits" "memory" "" $svc }}
+            {{- if and $.Values.goMemLimit.enabled $memLimit }}
+            # The Go runtime doesn't read the cgroup memory limit: without
+            # this the GC paces on GOGC alone and can grow past the limit.
+            - name: GOMEMLIMIT
+              value: {{ div (mul (include "flightdeck.memBytes" $memLimit | int64) (int64 $.Values.goMemLimit.percent)) 100 | quote }}
+            {{- end }}
             {{- if dig "uses" "redis" false $svc }}
             - name: REDIS_PASSWORD
               valueFrom:

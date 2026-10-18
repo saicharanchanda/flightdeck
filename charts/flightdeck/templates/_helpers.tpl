@@ -33,6 +33,21 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 {{- printf "%s-%s" (include "flightdeck.fullname" .root) .name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{/*
+Bytes for a Kubernetes memory quantity in Ki/Mi/Gi (or plain bytes).
+Call with the quantity string; returns an integer as a string.
+*/}}
+{{- define "flightdeck.memBytes" -}}
+{{- $q := toString . -}}
+{{- $n := regexFind "^[0-9]+" $q | int64 -}}
+{{- if hasSuffix "Gi" $q }}{{ mul $n 1073741824 }}
+{{- else if hasSuffix "Mi" $q }}{{ mul $n 1048576 }}
+{{- else if hasSuffix "Ki" $q }}{{ mul $n 1024 }}
+{{- else if regexMatch "^[0-9]+$" $q }}{{ $n }}
+{{- else }}{{ fail (printf "unsupported memory quantity %q: use Ki, Mi, Gi or bytes" $q) }}
+{{- end }}
+{{- end }}
+
 {{/* Redis master Service address from the subchart's fullnameOverride. */}}
 {{- define "flightdeck.redisAddr" -}}
 {{- printf "%s-master:6379" .Values.redis.fullnameOverride }}
