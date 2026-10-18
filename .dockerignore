@@ -1,0 +1,6 @@
+# Only libs/ and apps/ are needed in the build context.
+*
+!libs/
+!apps/
+**/*_test.go
+**/bin/
