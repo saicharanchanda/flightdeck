@@ -20,5 +20,9 @@ spec:
     - port: http
       path: /metrics
       interval: {{ $.Values.serviceMonitor.interval }}
+      # Our metrics carry service="gateway" etc. Without this, the
+      # operator's target label service=<k8s Service> wins and ours is
+      # renamed exported_service.
+      honorLabels: true
 {{- end }}
 {{- end }}

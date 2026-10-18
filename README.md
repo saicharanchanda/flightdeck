@@ -45,6 +45,16 @@ make port-forward   # in another terminal
 make test-api
 ```
 
+Consoles (PowerShell, Windows):
+
+| Script | What |
+|---|---|
+| `scripts/open-consoles.ps1` | Port-forward Prometheus :9090, Alertmanager :9093, Grafana :3000, each in its own window, and open them in the browser |
+| `scripts/close-consoles.ps1` | Stop those port-forwards |
+| `scripts/grafana-password.ps1` | Print the Grafana admin login from Secret `monitoring/grafana-admin` |
+
+All URLs: [docs/endpoints.md](docs/endpoints.md).
+
 ## Resource budget
 
 The release must request < 1 CPU and < 2Gi memory. Requests per pod × replicas:
