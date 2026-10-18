@@ -41,6 +41,13 @@ running on your machine; `open-consoles.ps1` starts the ones marked ✓.
 | <http://localhost:8080> | Gateway, bypassing the ALB (for `make test-api`) | `-n flightdeck svc/flightdeck-gateway 8080:8080` (`make port-forward`) | — |
 | <http://localhost:3100/ready> | Loki API (normally used through Grafana → Explore → Loki) | `-n monitoring svc/loki 3100:3100` | — |
 
+Dashboards (`make observability`), via either Grafana URL:
+
+| Dashboard | Path |
+|---|---|
+| Flightdeck — RED (rate, errors, latency, SLO burn rate) | `/grafana/d/flightdeck-red` |
+| Flightdeck — Platform (nodes, requests vs allocatable, restarts, PVCs) | `/grafana/d/flightdeck-platform` |
+
 Chaos endpoints (`/chaos/latency?ms=`, `/chaos/errors?rate=`, `/chaos/reset`)
 exist on every service only when `config.chaosEnabled=true`; they return 404
 otherwise.

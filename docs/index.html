@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flightdeck — SRE on EKS</title>
+<meta name="description" content="Three Go services on Amazon EKS with SLOs, multi-window burn-rate alerts, Prometheus, Grafana, Loki and honest game-day writeups.">
+<meta property="og:title" content="flightdeck — SRE on EKS">
+<meta property="og:description" content="SLOs, burn-rate alerts, RED dashboards, request tracing in Loki, and game days where the autoscaler wanted to scale in.">
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #11161d; --panel-2: #161c25; --line: #232b36;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --accent-2: #f0883e;
+    --good: #3fb950; --warn: #d29922; --bad: #f85149; --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font: 0.88em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--panel-2); padding: 0.1em 0.4em; border-radius: 6px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+  /* Hero */
+  header.hero { padding: 72px 0 40px; border-bottom: 1px solid var(--line);
+    background: radial-gradient(900px 400px at 15% -10%, rgba(88,166,255,0.16), transparent 60%),
+                radial-gradient(700px 360px at 95% 0%, rgba(240,136,62,0.10), transparent 60%); }
+  .eyebrow { color: var(--muted); font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; }
+  h1 { font-size: clamp(40px, 8vw, 72px); line-height: 1.02; margin: 10px 0 16px; letter-spacing: -0.03em; }
+  h1 span { background: linear-gradient(90deg, var(--accent), #a371f7 60%, var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lede { font-size: clamp(18px, 2.4vw, 22px); color: #c9d1d9; max-width: 760px; margin: 0 0 28px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn { display: inline-block; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-weight: 600; font-size: 15px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b0f14; }
+  .btn:hover { text-decoration: none; filter: brightness(1.1); }
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 36px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .stat b { display: block; font-size: 24px; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 13px; }
+
+  section { padding: 56px 0; border-bottom: 1px solid var(--line); }
+  h2 { font-size: clamp(26px, 4vw, 34px); margin: 0 0 8px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 760px; }
+
+  /* Diagrams */
+  .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .diagram .mermaid { min-width: 560px; max-width: 860px; margin: 0 auto; text-align: center; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 8px; display: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 14px; color: #c9d1d9; font-size: 14px; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+  /* Incidents */
+  .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+  .card.lead { grid-column: 1 / -1; border-color: rgba(88,166,255,0.45); box-shadow: 0 0 0 1px rgba(88,166,255,0.15), 0 20px 50px -30px rgba(88,166,255,0.5); }
+  .card img { width: 100%; height: auto; display: block; background: #0d1117; border-bottom: 1px solid var(--line); }
+  .card .body { padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+  .tag.star { color: #0b0f14; background: var(--accent); border-color: var(--accent); }
+  .tag.todo { color: var(--warn); border-color: rgba(210,153,34,0.4); }
+  .card h3 { margin: 0; font-size: 21px; line-height: 1.3; letter-spacing: -0.01em; }
+  .card p { margin: 0; color: #c9d1d9; }
+  .card .finding { border-left: 3px solid var(--accent-2); padding: 2px 0 2px 12px; color: var(--text); }
+  .card .more { margin-top: auto; padding-top: 6px; font-weight: 600; }
+  .card.pending { border-style: dashed; }
+  .card.pending .placeholder { aspect-ratio: 780 / 384; display: grid; place-items: center; color: var(--muted); background: repeating-linear-gradient(135deg, #0d1117 0 12px, #10151c 12px 24px); border-bottom: 1px dashed var(--line); font-size: 14px; }
+
+  /* Stack */
+  .stack { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .group { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+  .group h4 { margin: 0 0 10px; font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+  .group ul { margin: 0; padding: 0; list-style: none; }
+  .group li { padding: 6px 0; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; }
+  .group li:first-child { border-top: 0; }
+  .group li span:last-child { color: var(--muted); font-size: 14px; text-align: right; }
+
+  footer { padding: 36px 0 56px; color: var(--muted); font-size: 14px; }
+  footer .links { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 10px; }
+
+  @media (max-width: 860px) {
+    .stack { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 640px) {
+    header.hero { padding: 48px 0 28px; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .cards, .stack { grid-template-columns: 1fr; }
+    .card.lead { grid-column: auto; }
+    .hint { display: block; }
+    section { padding: 40px 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">SRE portfolio · Amazon EKS · built and operated 2026-10-18</div>
+    <h1><span>flightdeck</span></h1>
+    <p class="lede">Three Go services on Kubernetes with the observability an SRE team would expect — SLOs, burn-rate alerts, request tracing — then broken on purpose and written up honestly.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/saicharanchanda/flightdeck">View the repo</a>
+      <a class="btn" href="https://github.com/saicharanchanda/flightdeck/blob/main/docs/gameday-02-latency.md">Read the headline game day</a>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>320×</b><span>latency rise the CPU autoscaler ignored</span></div>
+      <div class="stat"><b>99% · 95%</b><span>availability · latency SLOs, 7-day window</span></div>
+      <div class="stat"><b>27</b><span>recording and alert rules, all in Git</span></div>
+      <div class="stat"><b>≈$0.36/h</b><span>to run at list price (2 × m7i-flex.large)</span></div>
+    </div>
+  </div>
+</header>
+
+<main>
+<section id="architecture">
+  <div class="wrap">
+    <h2>Architecture</h2>
+    <p class="sub">EKS 1.36 on 2 × m7i-flex.large in us-east-1 — public subnets, no NAT gateway; images from GHCR, tagged by git SHA. One ALB in front of the gateway and Grafana; Prometheus scrapes, Alloy ships logs to Loki. Two IAM identity mechanisms, used on purpose so they can be compared.</p>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+  client(["Client · one allowed /32"]) -->|"HTTP"| alb["ALB · IngressGroup flightdeck"]
+  alb -->|"/ → gateway"| fd
+  alb -->|"/grafana → Grafana"| mon
+  subgraph fd["namespace flightdeck"]
+    direction LR
+    gw["gateway<br/>HPA 2-5"] --> fl["flights × 2"] --> pg[("PostgreSQL")]
+    gw -->|"RPUSH"| rd[("Redis")] -->|"BLPOP"| nt["notifier"]
+  end
+  subgraph mon["namespace monitoring"]
+    direction LR
+    graf["Grafana"] --> prom["Prometheus"]
+    graf --> loki["Loki"]
+    alloy["Alloy"] --> loki
+  end
+  subgraph idn["kube-system → IAM"]
+    direction LR
+    lbc["LB Controller"] ==>|"IRSA"| irsa{{"IAM role"}}
+    csi["EBS CSI"] ==>|"Pod Identity"| podid{{"IAM role"}}
+  end
+  fd -. "scraped, logs tailed" .-> mon
+  mon ~~~ idn
+</pre>
+    </div>
+    <p class="hint">Swipe the diagram sideways to see all of it.</p>
+    <div class="legend">
+      <span class="pill"><span class="dot" style="background:var(--accent)"></span><b>IRSA</b> — AWS LB Controller: federated trust on the cluster OIDC provider, scoped to one ServiceAccount</span>
+      <span class="pill"><span class="dot" style="background:var(--accent-2)"></span><b>EKS Pod Identity</b> — EBS CSI driver: trust on <code>pods.eks.amazonaws.com</code>, binding in an EKS association</span>
+    </div>
+  </div>
+</section>
+
+<section id="incidents">
+  <div class="wrap">
+    <h2>Incidents</h2>
+    <p class="sub">Game days under steady in-cluster load (k6, 20 req/s). Charts are rendered from the metrics Prometheus recorded during each run. Each writeup includes a timeline, every query used, and what didn't go as expected.</p>
+    <div class="cards">
+
+      <article class="card lead">
+        <img src="img/gameday-02-hpa-blind.svg" alt="Gateway latency rises 320 times while the autoscaler's CPU signal stays near 13 percent" loading="lazy">
+        <div class="body">
+          <div><span class="tag star">Game day 02 · headline</span></div>
+          <h3>Latency up 320× — and the autoscaler wanted to scale <em>in</em></h3>
+          <p>800ms injected into every gateway request for 24 minutes. The HPA's CPU signal moved from 12% to 15% of a 70% target; replicas stayed at 2.</p>
+          <p class="finding">Its status read <code>TooFewReplicas: the desired replica count is less than the minimum</code>. Waiting isn't work, so CPU-based autoscaling sees a slow service as an idle one. A forced extra pod then got 0% of in-cluster traffic: a Service balances connections, not requests.</p>
+          <a class="more" href="https://github.com/saicharanchanda/flightdeck/blob/main/docs/gameday-02-latency.md">Full writeup: predictions vs outcomes →</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <img src="img/gameday-01-burn-rate.svg" alt="Availability burn rate in the 5-minute and 1-hour windows crossing the 14.4x page threshold" loading="lazy">
+        <div class="body">
+          <div><span class="tag">Game day 01</span></div>
+          <h3>Error spike: paged in 9.5 min — would be ~29 in production</h3>
+          <p>30% of gateway requests returned 500. Every error carried <code>route="unmatched"</code> and finished in 25µs: rejected before routing.</p>
+          <p class="finding">The 1h window held only 6 minutes of clean traffic. With a full clean hour, a 30% error rate needs ~29 minutes to cross 14.4×. The ticket fired 5 minutes after the fix.</p>
+          <a class="more" href="https://github.com/saicharanchanda/flightdeck/blob/main/docs/gameday-01-error-spike.md">Full writeup →</a>
+        </div>
+      </article>
+
+      <article class="card pending">
+        <div class="placeholder">Not yet run</div>
+        <div class="body">
+          <div><span class="tag todo">Game day 03 · planned</span></div>
+          <h3>OOMKill</h3>
+          <p>Drop the flights memory limit to 32Mi under load; watch the kill and restart loop and the <code>FlightdeckPodCrashLooping</code> alert.</p>
+        </div>
+      </article>
+
+      <article class="card pending">
+        <div class="placeholder">Not yet run</div>
+        <div class="body">
+          <div><span class="tag todo">Game day 04 · planned</span></div>
+          <h3>Dependency failure</h3>
+          <p>Scale Postgres to 0: how flights fails, how the gateway reports it, and whether readiness probes do the right thing.</p>
+        </div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<section id="stack">
+  <div class="wrap">
+    <h2>Stack</h2>
+    <p class="sub">Everything is deployed by a <code>make</code> target, and every Helm install is validated by <code>kubeconform -strict</code> first.</p>
+    <div class="stack">
+      <div class="group"><h4>Services</h4><ul>
+        <li><span>Go</span><span>1.27, chi, slog JSON</span></li>
+        <li><span>gateway</span><span>public API, RED metrics</span></li>
+        <li><span>flights</span><span>reads PostgreSQL</span></li>
+        <li><span>notifier</span><span>Redis BLPOP worker</span></li>
+        <li><span>k6</span><span>in-cluster load Job</span></li>
+      </ul></div>
+      <div class="group"><h4>Platform</h4><ul>
+        <li><span>Amazon EKS</span><span>Kubernetes 1.36</span></li>
+        <li><span>Helm</span><span>own chart + pinned upstreams</span></li>
+        <li><span>AWS LB Controller</span><span>ALB, IRSA</span></li>
+        <li><span>EBS CSI</span><span>gp3, Pod Identity</span></li>
+        <li><span>PostgreSQL · Redis</span><span>Bitnami, digest-pinned</span></li>
+      </ul></div>
+      <div class="group"><h4>Observability</h4><ul>
+        <li><span>Prometheus</span><span>kube-prometheus-stack</span></li>
+        <li><span>Grafana</span><span>dashboards as code</span></li>
+        <li><span>Loki · Alloy</span><span>logs, request_id tracing</span></li>
+        <li><span>SLOs</span><span>multiwindow burn rate</span></li>
+        <li><span>Runbooks</span><span>one per alert</span></li>
+      </ul></div>
+      <div class="group"><h4>Delivery</h4><ul>
+        <li><span>GitHub Actions</span><span>vet, test, build</span></li>
+        <li><span>GHCR</span><span>tags = git short SHA</span></li>
+        <li><span>kubeconform</span><span>strict, CRD schemas</span></li>
+      </ul></div>
+      <div class="group"><h4>Security</h4><ul>
+        <li><span>Non-root, read-only FS</span><span>all capabilities dropped</span></li>
+        <li><span>ALB</span><span>one /32, never committed</span></li>
+        <li><span>Secrets</span><span>Secret objects only</span></li>
+      </ul></div>
+      <div class="group"><h4>Cost</h4><ul>
+        <li><span>List price</span><span>≈ $0.36 / hour</span></li>
+        <li><span>Billed</span><span>$0 (account credits)</span></li>
+        <li><span>NAT gateways</span><span>none</span></li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/saicharanchanda/flightdeck">Repository</a>
+      <a href="https://github.com/saicharanchanda/flightdeck#engineering-notes">Engineering notes</a>
+      <a href="https://github.com/saicharanchanda/flightdeck#what-id-change-at-production-scale">Production changes</a>
+      <a href="https://github.com/saicharanchanda/flightdeck/blob/main/docs/journal.md">Journal</a>
+      <a href="https://github.com/saicharanchanda/flightdeck/blob/main/docs/identity.md">IRSA vs Pod Identity</a>
+      <a href="https://github.com/saicharanchanda/flightdeck/tree/main/docs/runbooks">Runbooks</a>
+    </div>
+    Built by Sai Charan Chanda. The cluster is temporary; the repository is the deliverable.
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    securityLevel: 'strict',
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true, background: '#11161d', primaryColor: '#161c25', primaryBorderColor: '#3b4655',
+      primaryTextColor: '#e6edf3', lineColor: '#6e7681', clusterBkg: '#0d1117', clusterBorder: '#30363d',
+      fontFamily: '-apple-system, Segoe UI, Helvetica, Arial, sans-serif'
+    },
+    flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+  });
+</script>
+</body>
+</html>

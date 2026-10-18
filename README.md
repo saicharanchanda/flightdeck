@@ -1,71 +1,210 @@
 # flightdeck
 
-Kubernetes observability demo on EKS, themed around flight operations.
+**Three Go microservices for a flight-status API, run on Amazon EKS with the observability an SRE team would expect: SLOs with multi-window burn-rate alerts, RED dashboards, structured logs traced by request ID, and fault-injection game days written up honestly.**
+Everything is code: one Helm chart for the app, committed values for every upstream chart, IAM policies as JSON, dashboards and alert rules in Git, and a `make` target for each step.
+It was built and operated on a two-node cluster (2 × m7i-flex.large) for roughly **$0.36/hour at list price**; the account's credits covered it, so the actual bill was $0.
 
-> Stub — full architecture, deploy steps and `make` target docs to come.
+**Site:** <https://saicharanchanda.github.io/flightdeck/> · **Writeups:** [game day 01](docs/gameday-01-error-spike.md), [game day 02](docs/gameday-02-latency.md) · **Journal:** [docs/journal.md](docs/journal.md)
 
-## Layout
+> **Headline finding:** under a 320× latency regression the gateway's
+> CPU-based autoscaler didn't just fail to scale out — by its own arithmetic
+> it wanted to scale **in**. [Details below](#incidents).
 
-| Path | What |
-|---|---|
-| `apps/gateway` | Public HTTP API (:8080). Proxies flight reads, queues subscriptions on Redis. |
-| `apps/flights` | Flight status API (:8081), reads Postgres. |
-| `apps/notifier` | Worker consuming the `notifications` Redis list. Admin port :8082. |
-| `libs/svckit` | Shared logging, metrics, chaos, health and shutdown code. |
-| `db/` | `schema.sql` and `seed.sql` (40 departures from HYD, BLR, DEL, BOM, MAA). |
+---
 
-## Make targets
+## Architecture
 
-Run `make help` for the list. So far: `tidy`, `fmt`, `build`, `vet`, `test`,
-`check`, `run-gateway`, `run-flights`, `run-notifier`, `db-schema`, `db-seed`, `clean`.
+EKS `eks-practice` (Kubernetes 1.36) on 2 × m7i-flex.large in us-east-1: default VPC, public subnets, no NAT gateway. Images come from GHCR, tagged by git SHA.
 
-Chart (`charts/flightdeck`):
+```mermaid
+flowchart TB
+  client(["Client · one allowed /32"]) -->|"HTTP :80"| alb["Application Load Balancer<br/>IngressGroup flightdeck · target-type ip"]
+  alb -->|"/ → gateway"| fd
+  alb -->|"/grafana → Grafana"| mon
+
+  subgraph fd["namespace flightdeck"]
+    direction LR
+    gw["gateway<br/>HPA 2-5"] -->|"GET /flights/{id}"| fl["flights × 2"] --> pg[("PostgreSQL<br/>2Gi gp3")]
+    gw -->|"RPUSH"| rd[("Redis")] -->|"BLPOP"| nt["notifier"]
+  end
+
+  subgraph mon["namespace monitoring"]
+    direction LR
+    graf["Grafana"] --> prom["Prometheus<br/>3d retention"] --> am["Alertmanager"]
+    graf --> loki["Loki<br/>72h"]
+    alloy["Alloy<br/>DaemonSet"] --> loki
+  end
+
+  subgraph idn["kube-system → AWS IAM"]
+    direction LR
+    lbc["AWS Load Balancer<br/>Controller"] ==>|"IRSA"| irsa{{"IAM role<br/>trust: cluster OIDC provider"}}
+    csi["EBS CSI<br/>controller"] ==>|"EKS Pod Identity"| podid{{"IAM role<br/>trust: pods.eks.amazonaws.com"}}
+  end
+
+  fd -. "scraped by Prometheus, logs tailed by Alloy" .-> mon
+  mon ~~~ idn
+```
+
+Two identity mechanisms are in use **on purpose**: the AWS Load Balancer Controller assumes its role through **IRSA** (federated trust on the cluster's OIDC provider, scoped by a `sub` condition to one ServiceAccount); the EBS CSI driver uses **EKS Pod Identity** (trust on a single service principal, binding held in an EKS association). The differences are written up in [docs/identity.md](docs/identity.md).
+
+### One request, end to end
+
+```mermaid
+%%{init: {"sequence": {"actorMargin": 18, "width": 104, "boxMargin": 6, "noteMargin": 6, "messageMargin": 28}}}%%
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant G as gateway
+  participant F as flights
+  participant P as Postgres
+  participant R as Redis
+  participant N as notifier
+  participant L as Loki
+
+  C->>G: POST /subscribe (via ALB)
+  Note over G: mints request_id<br/>(client header ignored)
+  G->>F: GET /flights/12<br/>X-Request-ID
+  Note over F: trusts the header
+  F->>P: SELECT by id
+  P-->>F: row
+  F-->>G: 200 flight_no
+  G->>R: RPUSH job + request_id
+  G-->>C: 202, X-Request-ID
+  R-->>N: BLPOP job
+  Note over N: request_id from job
+  G--)L: log with request_id
+  F--)L: log with request_id
+  N--)L: delivered + request_id
+```
+
+`request_id` is a **structured-metadata field in Loki, not a label** (one stream per request would destroy the index). Grafana's Loki datasource turns it into a link: one click shows that request's lines from all three services.
+
+---
+
+## Incidents
+
+Game days run with a k6 load generator inside the cluster (`make load`, 20 req/s, 70% lookups / 20% boards / 10% subscribes). Each writeup has a timestamped timeline, every PromQL and LogQL query used, and a section on what didn't go as expected. The charts below are rendered from the metrics Prometheus recorded during each run (`scripts/render-gameday-charts.ps1`).
+
+### 02 — Latency injection: the autoscaler wanted to scale *in* ⭐
+
+800ms injected into every gateway request for 24 minutes. Latency rose **320×**; the HPA's CPU signal went from **12% → 15%** of a 70% target and replicas stayed at 2. Its status read `ScalingLimited: TooFewReplicas — the desired replica count is less than the minimum`: a waiting goroutine uses no CPU, so by CPU arithmetic the gateway looked *over*-provisioned. A forced extra pod then received **0%** of in-cluster traffic, because a ClusterIP Service balances connections, not requests, and k6 keeps its connections open; the ALB, balancing per request, sent it 30%. The latency page never fired: with a 5% budget the burn rate tops out at 20×, so a total latency outage needs ~43 minutes to page.
+
+![Game day 02: gateway latency up 320x while the HPA's CPU signal stays flat](docs/img/gameday-02-hpa-blind.svg)
+
+→ [docs/gameday-02-latency.md](docs/gameday-02-latency.md) — predictions vs outcomes, why CPU autoscaling is blind to latency, what to scale on instead (in-flight requests via KEDA or prometheus-adapter), and what per-pod state means for a horizontally scaled service.
+
+### 01 — Error spike: the page took 9.5 minutes; in production it would take ~29
+
+30% of gateway requests returned 500. The fast-burn page fired 9m26s after injection; diagnosis took minutes because every error carried `route="unmatched"` and finished in 25µs without reaching flights. The fast detection was luck: the 1h window held only 6 minutes of clean traffic. With a full clean hour, a 30% error rate crosses the 14.4× threshold after ~29 minutes. The slow-burn ticket fired **5 minutes after the fix**. The alert's own description turned out to be wrong; it was fixed during the run.
+
+![Game day 01: availability burn rate over the 5m and 1h windows](docs/img/gameday-01-burn-rate.svg)
+
+→ [docs/gameday-01-error-spike.md](docs/gameday-01-error-spike.md)
+
+### 03 — OOMKill · *not yet run*
+
+Planned: drop the flights memory limit to 32Mi under load, observe the kill/restart loop and `FlightdeckPodCrashLooping`.
+
+### 04 — Dependency failure · *not yet run*
+
+Planned: scale Postgres to 0; observe how flights fails, how the gateway reports it, and whether readiness probes behave.
+
+---
+
+## Engineering notes
+
+Bugs found by operating the system, not by reading it. Each is fixed, or documented where the fix is a design change.
+
+- **`route="unmatched"` hides middleware failures.** The access-log/metrics middleware reads chi's route pattern *after* the handler runs. Chaos (and any middleware that rejects early) answers before routing, so those requests carry no route. During game day 01 that was a useful clue; in a real incident an auth or rate-limit rejection would be just as anonymous in the RED-by-route view. Fix: middleware that writes a 5xx should log a `reason`.
+- **`$value` lies in multi-condition alerts.** In `A and B`, Prometheus returns **A's** value. The fast-burn alert said "17.67x burn over 5m" when it was the 1h window (the 5m burn was ~30×), and "budget gone in ~12h" was only true at exactly 14.4×. The descriptions now name the long window and compute time-to-exhaustion with a template query (`604800 / burnrate1h`): "gone in 16h 15m".
+- **PowerShell 5.1 `ConvertFrom-Json` emits a JSON array as one object.** `close-consoles.ps1` wrapped it in `@(...)`, got an array containing the array, and ran its loop once with every PID — a malformed CIM filter error, masked by a fallback that killed the processes anyway. Fixed by assigning to a variable first; a synthetic test went from 1 iteration to 3.
+- **Label collision with the Prometheus Operator.** Our metrics carry `service="gateway"`; the operator adds a target label `service=<k8s Service>`. Prometheus kept the target's value and renamed ours `exported_service`. Fixed with `honorLabels: true` on the ServiceMonitors.
+- **Coarse histograms mislead.** With all requests at ~805ms, `histogram_quantile` reported p50 0.75s and p99 0.995s — the midpoint and edge of the `0.5–1.0s` bucket. `sum/count` and Loki's `unwrap duration_ms` gave the truth. There is also no 300ms bucket, so the "95% under 300ms" SLO is measured at 250ms.
+- **An IngressGroup's security group is the union of its members.** Joining Grafana to the gateway's ALB meant every member must carry `inbound-cidrs`; one without it defaults to `0.0.0.0/0` and opens the whole ALB. Both Ingresses now require it, and the chart refuses to render without it.
+- **Sizing from guesses fails; sizing from usage works.** Grafana's sidecars were OOMKilled at 96Mi, then Grafana itself at 384Mi; it idles at ~360Mi. Requests are now set to observed usage with ~2× headroom on limits.
+- **Docker Hub's `bitnami/*` only publishes `latest` now.** The no-`latest` rule is kept by pinning the Postgres and Redis images by digest.
+
+---
+
+## What I'd change at production scale
+
+| Today | Why it's fine here | What I'd do |
+|---|---|---|
+| **Single-replica Postgres and Redis** on one EBS volume each, both in us-east-1d | Demo data, reseeded on deploy | Amazon RDS Multi-AZ (or CloudNativePG with replicas across AZs) and ElastiCache with a replica; app pods spread across ≥ 2 AZs with `topologySpreadConstraints` set to `DoNotSchedule` |
+| **No backups** | Nothing to lose | RDS automated backups + PITR; Velero for cluster state and PVC snapshots; a restore drill as a game day |
+| **Prometheus 3d retention**, local volume; the "7d" SLO window only sees 3 days | Fits a 10Gi volume and the node budget | Remote-write to Thanos/Mimir or Amazon Managed Prometheus; ≥ 30d for SLO windows, longer downsampled |
+| **CPU-only HPA** | Proved inadequate in game day 02 | KEDA on in-flight requests per pod (and Redis queue length for the notifier), CPU as a secondary trigger; Cluster Autoscaler or Karpenter so the node group actually grows |
+| **No mTLS, plaintext inside the cluster;** NetworkPolicies written but not enforced (VPC CNI policy agent off) | Lab cluster, one tenant | Enable VPC CNI network policy; a mesh (Linkerd/Istio ambient) for mTLS and per-request balancing, which also fixes the L4 keep-alive problem from game day 02 |
+| **No GitOps**: `make deploy` from a laptop | One operator | Argo CD or Flux syncing `charts/` and `platform/`; image tag bumps by PR from CI |
+| **HTTP only on the ALB, allowlisted to one IP** | Demo access | ACM certificate, HTTPS listener, redirect 80 → 443, WAF; Grafana behind SSO (OIDC) instead of a basic-auth admin |
+| **Alertmanager has no receivers** | Alerts were watched in the UI | Pager/Slack routes per `severity`; inhibit the slow-burn ticket while the page for the same SLO is active |
+| **Chaos state in each pod's memory** | Only used for game days | Chaos from a watched ConfigMap so every replica agrees, and a `chaos_*` gauge so a forgotten experiment is visible |
+| **Public subnets, nodes with public IPs, no NAT** | Saves ~$33/month per NAT gateway | Private subnets for nodes, NAT or VPC endpoints for ECR/S3/STS, public subnets only for the ALB |
+
+---
+
+## Quickstart
+
+Prerequisites: an EKS cluster with the `eks-pod-identity-agent` add-on, `kubectl`, `helm`, `kubeconform`, `aws`, `make`. IAM setup (OIDC provider, both roles, subnet tags) is recorded with exact commands in [infra/iam/README.md](infra/iam/README.md).
+
+```bash
+make platform-lbc                 # AWS Load Balancer Controller (IRSA)
+make deploy                       # validate, then install the app; ALB restricted to your IP
+kubectl -n monitoring create secret generic grafana-admin \
+  --from-literal=admin-user=admin --from-literal=admin-password='<choose one>'
+make platform-monitoring          # kube-prometheus-stack; Grafana at /grafana on the same ALB
+make platform-logging             # Loki + Alloy
+make observability                # SLO rules + dashboards
+make load RATE=20 DURATION=10m    # k6 in-cluster
+```
+
+Every install target runs `helm template | kubeconform -strict` first. URLs for everything are in [docs/endpoints.md](docs/endpoints.md); on Windows, `scripts/open-consoles.ps1` port-forwards and opens them all.
+
+### Make targets
 
 | Target | What |
 |---|---|
-| `chart-sql` | Copy `db/*.sql` into `charts/flightdeck/files/db/` (CI fails if they drift) |
-| `helm-deps` | Fetch the pinned subcharts: bitnami/postgresql 18.12.4, bitnami/redis 28.3.1 |
-| `helm-lint` | `helm lint`, with and without ServiceMonitors |
-| `helm-template` | Render the release to stdout |
-| `helm-validate` | Render and run `kubeconform -strict` against Kubernetes 1.36, ServiceMonitor CRDs included |
-| `deploy` | `helm-validate`, then create the `flightdeck` namespace if needed and `helm upgrade --install --wait`. The ALB only admits `INGRESS_CIDR` (default: your current public IP) |
-| `platform-lbc` | Validate and install the AWS Load Balancer Controller 3.6.0 (IRSA) from `platform/aws-load-balancer-controller/` |
-| `platform-monitoring` | Validate and install kube-prometheus-stack 92.10.1 into `monitoring`. Needs the `grafana-admin` Secret; Grafana joins the gateway's ALB at `/grafana`, restricted to `INGRESS_CIDR` |
-| `platform-logging` | Validate and install Loki 3.6 (chart 7.3.0, SingleBinary, 72h retention) and Alloy (chart 1.13.1, DaemonSet) into `monitoring` |
-| `prometheus-ui` | Port-forward Prometheus to <http://localhost:9090> |
-| `grafana-ui` | Port-forward Grafana to <http://localhost:3000/grafana/> |
-| `port-forward` | Forward the gateway Service to `localhost:8080` |
-| `test-api` | Smoke-test every gateway endpoint at `BASE_URL` (default `http://localhost:8080`) |
+| `build` · `vet` · `test` · `check` · `tidy` · `fmt` | Go, across all four modules (`libs/svckit` and the three services) |
+| `run-gateway` · `run-flights` · `run-notifier` | Run a service locally |
+| `db-schema` · `db-seed` | Apply `db/schema.sql` / `db/seed.sql` to a local Postgres |
+| `chart-sql` | Copy `db/*.sql` into the chart (CI fails if they drift) |
+| `helm-deps` · `helm-lint` · `helm-template` · `helm-validate` | Chart workflow; `helm-validate` = lint + `kubeconform -strict` incl. CRD schemas |
+| `deploy` | Validate, then `helm upgrade --install` into `flightdeck`; ALB allowlisted to `INGRESS_CIDR` (default: your public IP) |
+| `platform-lbc` | AWS Load Balancer Controller 3.6.0 |
+| `platform-monitoring` | kube-prometheus-stack 92.10.1 (needs Secret `grafana-admin`) |
+| `platform-logging` | Loki 3.6 (SingleBinary, 72h) and Alloy (DaemonSet) |
+| `observability` | Validate (kubeconform, promtool, JSON) and apply SLO rules and dashboards |
+| `load` · `load-stop` | k6 Job in-cluster (`RATE`, `DURATION`) |
+| `prometheus-ui` · `grafana-ui` · `port-forward` | Port-forwards to `:9090`, `:3000/grafana/`, `:8080` |
+| `test-api` | 16-check smoke test of the gateway at `BASE_URL` |
 
-Deploy and test:
+### Layout
 
-```bash
-make deploy
-make port-forward   # in another terminal
-make test-api
-```
-
-Consoles (PowerShell, Windows):
-
-| Script | What |
+| Path | What |
 |---|---|
-| `scripts/open-consoles.ps1` | Port-forward Prometheus :9090, Alertmanager :9093, Grafana :3000, each in its own window, and open them in the browser |
-| `scripts/close-consoles.ps1` | Stop those port-forwards |
-| `scripts/grafana-password.ps1` | Print the Grafana admin login from Secret `monitoring/grafana-admin` |
+| `apps/gateway` · `apps/flights` · `apps/notifier` | The three services (Go, chi, slog JSON, client_golang) |
+| `libs/svckit` | Shared request IDs, logging, RED metrics, chaos, health, graceful shutdown |
+| `charts/flightdeck` | The app chart: Deployments, HPA, PDBs, NetworkPolicies, ServiceMonitors, Ingress, db-init hook |
+| `platform/` | Committed values for every upstream chart |
+| `observability/` | SLO PrometheusRule and Grafana dashboards as JSON |
+| `infra/` | IAM policies and trust policies (JSON), gp3 StorageClass |
+| `loadtest/` | k6 script, Job manifest, per-pod chaos helper |
+| `docs/` | Game days, runbooks, identity notes, endpoints, journal, the GitHub Pages site |
 
-All URLs: [docs/endpoints.md](docs/endpoints.md).
+---
 
-## Resource budget
+## Cost
 
-The release must request < 1 CPU and < 2Gi memory. Requests per pod × replicas:
+Approximate on-demand list prices in us-east-1 for what ran. **Actual billed: $0.00** — the account's credits covered it (Cost Explorer, month to date, 2026-10-18).
 
-| Workload | Replicas | CPU | Memory |
-|---|---|---|---|
-| gateway | 2 (HPA min) – 5 (max) | 50m | 64Mi |
-| flights | 2 | 50m | 64Mi |
-| notifier | 1 | 25m | 32Mi |
-| postgresql | 1 | 150m | 384Mi |
-| redis | 1 | 50m | 96Mi |
-| db-init Job (hook, transient) | 1 | 25m | 32Mi |
-| **Total at HPA min** | | **450m** | **800Mi** |
-| **Total at HPA max** | | **600m** | **992Mi** |
+| Item | Quantity | ≈ per hour |
+|---|---|---|
+| EKS control plane | 1 cluster | $0.100 |
+| EC2 m7i-flex.large | 2 nodes | $0.192 |
+| ALB (hourly + minimal LCU) | 1 | $0.025 |
+| Public IPv4 addresses | 2 nodes + 5 ALB | $0.035 |
+| EBS gp3 | 69 GiB (2 × 20 node roots, 29 PVCs) | $0.008 |
+| NAT gateway | none (public subnets) | $0 |
+| **Total** | | **≈ $0.36/h ≈ $8.60/day** |
+
+Resource budget inside the cluster (requests): the app release is 450m CPU / 800Mi at minimum scale; with the platform the cluster requests ~2.1 of 3.9 CPUs and ~4.1 of 13.9 GiB. Breakdown in [docs/journal.md](docs/journal.md).
