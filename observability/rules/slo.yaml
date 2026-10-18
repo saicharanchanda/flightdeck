@@ -1,0 +1,237 @@
+# flightdeck SLOs and alerts. Applied with `make observability`.
+#
+# SLOs for the gateway (the public API), over a 7-day window:
+#   availability  99% of requests succeed (non-5xx)       error budget 1%
+#   latency       95% of requests complete under 300ms    error budget 5%
+#
+# SLI scope: gateway requests, excluding probes and scrapes. The ALB health
+# checks /healthz every 10s from each ALB node; counting those would drown
+# real traffic in guaranteed successes.
+#
+# Latency threshold: the request histogram has buckets ... 0.25, 0.5 (s), so
+# "under 300ms" is measured as le="0.25" — slightly stricter than the SLO.
+#
+# Burn-rate alerts follow the Google SRE workbook (multiwindow, multi-burn-
+# rate). The 14.4x / 6x factors were derived for a 30-day budget (2% / 5% of
+# it consumed in 1h / 6h). Against this 7-day budget they mean: a 14.4x burn
+# spends ~8.6% of the week's budget per hour (exhausted in ~12h); 6x spends
+# ~21% per 6h (exhausted in ~28h).
+#
+# Retention is 3d, so the 7d ratio below covers at most the last 3 days.
+# Denominators are "(... > 0)": with no traffic a ratio has no sample instead
+# of NaN (0/0), so dashboards show "No traffic" and alerts stay quiet.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flightdeck-slo
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: flightdeck
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # --- SLIs: good-events ratio per window ------------------------------------
+    - name: flightdeck-slo-sli
+      interval: 30s
+      rules:
+        - record: slo:gateway_availability_good:ratio_rate5m
+          expr: |
+            sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", status!~"5.."}[5m]))
+            /
+            (sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[5m])) > 0)
+        - record: slo:gateway_availability_good:ratio_rate30m
+          expr: |
+            sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", status!~"5.."}[30m]))
+            /
+            (sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[30m])) > 0)
+        - record: slo:gateway_availability_good:ratio_rate1h
+          expr: |
+            sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", status!~"5.."}[1h]))
+            /
+            (sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[1h])) > 0)
+        - record: slo:gateway_availability_good:ratio_rate6h
+          expr: |
+            sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", status!~"5.."}[6h]))
+            /
+            (sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[6h])) > 0)
+        - record: slo:gateway_availability_good:ratio_rate7d
+          expr: |
+            sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", status!~"5.."}[7d]))
+            /
+            (sum(rate(http_requests_total{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[7d])) > 0)
+
+        - record: slo:gateway_latency_good:ratio_rate5m
+          expr: |
+            sum(rate(http_request_duration_seconds_bucket{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", le="0.25"}[5m]))
+            /
+            (sum(rate(http_request_duration_seconds_count{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[5m])) > 0)
+        - record: slo:gateway_latency_good:ratio_rate30m
+          expr: |
+            sum(rate(http_request_duration_seconds_bucket{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", le="0.25"}[30m]))
+            /
+            (sum(rate(http_request_duration_seconds_count{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[30m])) > 0)
+        - record: slo:gateway_latency_good:ratio_rate1h
+          expr: |
+            sum(rate(http_request_duration_seconds_bucket{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", le="0.25"}[1h]))
+            /
+            (sum(rate(http_request_duration_seconds_count{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[1h])) > 0)
+        - record: slo:gateway_latency_good:ratio_rate6h
+          expr: |
+            sum(rate(http_request_duration_seconds_bucket{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", le="0.25"}[6h]))
+            /
+            (sum(rate(http_request_duration_seconds_count{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[6h])) > 0)
+        - record: slo:gateway_latency_good:ratio_rate7d
+          expr: |
+            sum(rate(http_request_duration_seconds_bucket{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics", le="0.25"}[7d]))
+            /
+            (sum(rate(http_request_duration_seconds_count{namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"}[7d])) > 0)
+
+    # --- Burn rates: (1 - good ratio) / error budget ---------------------------
+    # 1 = spending the budget exactly as fast as the SLO allows.
+    - name: flightdeck-slo-burnrate
+      interval: 30s
+      rules:
+        - record: slo:gateway_availability:burnrate5m
+          expr: (1 - slo:gateway_availability_good:ratio_rate5m) / (1 - 0.99)
+        - record: slo:gateway_availability:burnrate30m
+          expr: (1 - slo:gateway_availability_good:ratio_rate30m) / (1 - 0.99)
+        - record: slo:gateway_availability:burnrate1h
+          expr: (1 - slo:gateway_availability_good:ratio_rate1h) / (1 - 0.99)
+        - record: slo:gateway_availability:burnrate6h
+          expr: (1 - slo:gateway_availability_good:ratio_rate6h) / (1 - 0.99)
+        - record: slo:gateway_latency:burnrate5m
+          expr: (1 - slo:gateway_latency_good:ratio_rate5m) / (1 - 0.95)
+        - record: slo:gateway_latency:burnrate30m
+          expr: (1 - slo:gateway_latency_good:ratio_rate30m) / (1 - 0.95)
+        - record: slo:gateway_latency:burnrate1h
+          expr: (1 - slo:gateway_latency_good:ratio_rate1h) / (1 - 0.95)
+        - record: slo:gateway_latency:burnrate6h
+          expr: (1 - slo:gateway_latency_good:ratio_rate6h) / (1 - 0.95)
+        # Remaining error budget over the window (1 = untouched, <0 = blown).
+        - record: slo:gateway_availability:error_budget_remaining
+          expr: 1 - (1 - slo:gateway_availability_good:ratio_rate7d) / (1 - 0.99)
+        - record: slo:gateway_latency:error_budget_remaining
+          expr: 1 - (1 - slo:gateway_latency_good:ratio_rate7d) / (1 - 0.95)
+
+    # --- SLO alerts --------------------------------------------------------------
+    # Both windows must burn: the long one proves it's significant, the short
+    # one proves it's still happening (so the alert resets quickly after a fix).
+    # With no traffic the ratios have no sample, so nothing fires.
+    #
+    # In "A and B" the alert's $value is A's: the LONG window. Time to budget
+    # exhaustion is computed with a query (templates have no arithmetic):
+    # 604800s (7d) / current long-window burn rate.
+    - name: flightdeck-slo-alerts
+      rules:
+        - alert: GatewayAvailabilityFastBurn
+          expr: |
+            slo:gateway_availability:burnrate1h > 14.4
+            and
+            slo:gateway_availability:burnrate5m > 14.4
+          for: 2m
+          labels:
+            severity: page
+            slo: gateway-availability
+          annotations:
+            summary: Gateway is burning its availability error budget 14.4x too fast
+            description: >-
+              {{ $value | humanize }}x burn over 1h (and >14.4x over 5m) against the 99%
+              availability SLO. At this rate the 7-day error budget is gone in
+              {{ with query "604800 / slo:gateway_availability:burnrate1h" }}{{ . | first | value | humanizeDuration }}{{ end }}.
+            runbook_url: https://github.com/saicharanchanda/flightdeck/blob/main/docs/runbooks/gateway-availability-fast-burn.md
+        - alert: GatewayAvailabilitySlowBurn
+          expr: |
+            slo:gateway_availability:burnrate6h > 6
+            and
+            slo:gateway_availability:burnrate30m > 6
+          for: 15m
+          labels:
+            severity: ticket
+            slo: gateway-availability
+          annotations:
+            summary: Gateway is burning its availability error budget 6x too fast
+            description: >-
+              {{ $value | humanize }}x burn over 6h (and >6x over 30m) against the 99%
+              availability SLO. At this rate the 7-day error budget is gone in
+              {{ with query "604800 / slo:gateway_availability:burnrate6h" }}{{ . | first | value | humanizeDuration }}{{ end }}.
+            runbook_url: https://github.com/saicharanchanda/flightdeck/blob/main/docs/runbooks/gateway-availability-slow-burn.md
+        - alert: GatewayLatencyFastBurn
+          expr: |
+            slo:gateway_latency:burnrate1h > 14.4
+            and
+            slo:gateway_latency:burnrate5m > 14.4
+          for: 2m
+          labels:
+            severity: page
+            slo: gateway-latency
+          annotations:
+            summary: Gateway is burning its latency error budget 14.4x too fast
+            description: >-
+              {{ $value | humanize }}x burn over 1h (and >14.4x over 5m) against the
+              "95% under 300ms" SLO (measured at 250ms). At this rate the 7-day budget is gone in
+              {{ with query "604800 / slo:gateway_latency:burnrate1h" }}{{ . | first | value | humanizeDuration }}{{ end }}.
+            runbook_url: https://github.com/saicharanchanda/flightdeck/blob/main/docs/runbooks/gateway-latency-fast-burn.md
+        - alert: GatewayLatencySlowBurn
+          expr: |
+            slo:gateway_latency:burnrate6h > 6
+            and
+            slo:gateway_latency:burnrate30m > 6
+          for: 15m
+          labels:
+            severity: ticket
+            slo: gateway-latency
+          annotations:
+            summary: Gateway is burning its latency error budget 6x too fast
+            description: >-
+              {{ $value | humanize }}x burn over 6h (and >6x over 30m) against the
+              "95% under 300ms" SLO (measured at 250ms). At this rate the 7-day budget is gone in
+              {{ with query "604800 / slo:gateway_latency:burnrate6h" }}{{ . | first | value | humanizeDuration }}{{ end }}.
+            runbook_url: https://github.com/saicharanchanda/flightdeck/blob/main/docs/runbooks/gateway-latency-slow-burn.md
+
+    # --- Platform alerts ---------------------------------------------------------
+    - name: flightdeck-platform-alerts
+      rules:
+        # kube-state-metrics only emits this series while a container is
+        # waiting, so a healthy cluster has none. max_over_time rides over the
+        # brief Running phases between back-offs.
+        - alert: FlightdeckPodCrashLooping
+          expr: |
+            max_over_time(kube_pod_container_status_waiting_reason{namespace=~"flightdeck|monitoring", reason="CrashLoopBackOff"}[5m]) >= 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) is crash-looping"
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }}
+              has been in CrashLoopBackOff for at least 10 minutes.
+            runbook_url: https://github.com/saicharanchanda/flightdeck/blob/main/docs/runbooks/pod-crashlooping.md
+        - alert: FlightdeckPVCUsageHigh
+          expr: |
+            max by (namespace, persistentvolumeclaim) (
+              kubelet_volume_stats_used_bytes{namespace=~"flightdeck|monitoring"}
+              /
+              kubelet_volume_stats_capacity_bytes{namespace=~"flightdeck|monitoring"}
+            ) > 0.80
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full"
+            description: >-
+              Volume {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} has been above
+              80% used for 10 minutes ({{ $value | humanizePercentage }} now). gp3 volumes can be
+              expanded online (allowVolumeExpansion is true).
+            runbook_url: https://github.com/saicharanchanda/flightdeck/blob/main/docs/runbooks/pvc-usage-high.md
+        - alert: NotifierQueueBacklog
+          expr: |
+            max(notification_queue_depth{namespace="flightdeck"}) > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Notifier queue has {{ $value }} jobs waiting"
+            description: >-
+              The Redis list "notifications" has held more than 100 jobs for 5 minutes
+              ({{ $value }} now). The notifier is not keeping up, or is not consuming at all.
+            runbook_url: https://github.com/saicharanchanda/flightdeck/blob/main/docs/runbooks/notifier-queue-backlog.md
