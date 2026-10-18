@@ -1,0 +1,63 @@
+# k6 load generator, run inside the cluster against the gateway Service (not
+# the ALB, so load doesn't depend on the source-IP allowlist or your uplink).
+# `make load RATE=20 DURATION=10m` fills in the placeholders and the script
+# ConfigMap. The namespace is created by `make load`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-baseline
+  namespace: loadtest
+  labels:
+    app.kubernetes.io/name: k6
+    app.kubernetes.io/part-of: flightdeck
+spec:
+  backoffLimit: 0 # a load test that failed thresholds must not silently re-run
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k6
+        app.kubernetes.io/part-of: flightdeck
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 12345 # the k6 image's user
+        runAsGroup: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          image: grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
+          args: ["run", "--no-color", "/scripts/baseline.js"]
+          env:
+            - name: TARGET
+              value: http://flightdeck-gateway.flightdeck.svc.cluster.local:8080
+            - name: RATE
+              value: "__RATE__"
+            - name: DURATION
+              value: "__DURATION__"
+            - name: MAX_VUS
+              value: "100"
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-scripts
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

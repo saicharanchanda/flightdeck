@@ -27,7 +27,7 @@ INGRESS_CIDR ?= $(shell curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr
 RENDER_SET := --set 'ingress.inboundCIDRs={203.0.113.10/32}'
 
 .PHONY: help tidy fmt build vet test check clean db-schema db-seed $(addprefix run-,$(SERVICES)) \
-	chart-sql helm-deps helm-lint helm-template helm-validate deploy platform-lbc platform-monitoring platform-logging prometheus-ui grafana-ui port-forward test-api
+	chart-sql helm-deps helm-lint helm-template helm-validate deploy platform-lbc platform-monitoring platform-logging observability load load-stop prometheus-ui grafana-ui port-forward test-api
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -129,6 +129,40 @@ platform-logging: ## Validate, then install/upgrade Loki (SingleBinary) and Allo
 	helm template alloy grafana/alloy --version $(ALLOY_VERSION) -n monitoring -f platform/alloy-values.yaml $(SM_API) | $(KUBECONFORM)
 	helm upgrade --install loki grafana/loki --version $(LOKI_VERSION) -n monitoring -f platform/loki-values.yaml --wait --timeout 10m
 	helm upgrade --install alloy grafana/alloy --version $(ALLOY_VERSION) -n monitoring -f platform/alloy-values.yaml --wait --timeout 10m
+
+PROM_POD := prometheus-kube-prometheus-stack-prometheus-0
+DASHBOARDS := $(wildcard observability/dashboards/*.json)
+
+observability: ## Validate and apply SLO rules (PrometheusRule) and Grafana dashboards (ConfigMaps)
+	$(KUBECONFORM) observability/rules/*.yaml
+	@for f in observability/rules/*.yaml; do \
+		echo "promtool check rules $$f"; \
+		awk '/^spec:/{f=1; next} f{sub(/^  /,""); print}' $$f | \
+			kubectl -n monitoring exec -i $(PROM_POD) -c prometheus -- promtool check rules /dev/stdin || exit 1; \
+	done
+	@for f in $(DASHBOARDS); do python3 -m json.tool $$f >/dev/null || { echo "invalid JSON: $$f"; exit 1; }; done
+	kubectl apply -f observability/rules/
+	@# One ConfigMap per dashboard; the Grafana sidecar loads anything labelled grafana_dashboard=1.
+	@for f in $(DASHBOARDS); do \
+		name=dashboard-$$(basename $$f .json); \
+		kubectl -n monitoring create configmap $$name --from-file=$$f --dry-run=client -o yaml | \
+			kubectl label --local -f - grafana_dashboard=1 app.kubernetes.io/part-of=flightdeck -o yaml | \
+			kubectl apply -f -; \
+	done
+
+RATE     ?= 20
+DURATION ?= 10m
+
+load: ## Run k6 (loadtest/k6/baseline.js) as a Job in-cluster: make load RATE=20 DURATION=10m
+	kubectl create namespace loadtest --dry-run=client -o yaml | kubectl apply -f -
+	kubectl -n loadtest create configmap k6-scripts --from-file=loadtest/k6/baseline.js --dry-run=client -o yaml | kubectl apply -f -
+	kubectl -n loadtest delete job k6-baseline --ignore-not-found
+	sed -e 's/__RATE__/$(RATE)/' -e 's/__DURATION__/$(DURATION)/' loadtest/k6/job.yaml | $(KUBECONFORM)
+	sed -e 's/__RATE__/$(RATE)/' -e 's/__DURATION__/$(DURATION)/' loadtest/k6/job.yaml | kubectl apply -f -
+	@echo "Follow: kubectl -n loadtest logs -f job/k6-baseline"
+
+load-stop: ## Stop a running load test
+	kubectl -n loadtest delete job k6-baseline --ignore-not-found
 
 prometheus-ui: ## Port-forward Prometheus to http://localhost:9090
 	kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
