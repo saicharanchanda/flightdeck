@@ -105,9 +105,25 @@ multiwindow burn-rate alerts; RED and Platform dashboards as code; 7 runbooks.
 **Showcase** — README rewritten, GitHub Pages site, this journal, game-day
 charts rendered from recorded Prometheus data.
 
+**23:17–23:58** (17:47–18:28Z) — [Game day 03](gameday-03-oom.md): OOMKill.
+- The notifier's 13:49Z "restart" checked first: a rolling replacement (rev 6), graceful SIGTERM exit, not an OOM.
+- Go unaware of the limit (`go_gc_gomemlimit_bytes` = MaxInt64).
+- 32Mi and a 150 req/s spike never killed it; 8Mi once; 6Mi crash-looped.
+- *Broke (my prediction):* the gateway hung for 5s instead of 502-ing.
+- *Shipped:* `GOMEMLIMIT` = 90% of the limit, from the chart.
+- Paused before Step C (the A/B with `GOMEMLIMIT`) to start game day 04.
+
+**23:59–00:20** (18:29–18:50Z) — [Game day 04](gameday-04-dependency.md): Postgres to 0.
+- Honest `/readyz` emptied the Service.
+- 100% errors, mostly 5s hangs.
+- No alert named Postgres.
+- Recovery 30.5s, no restarts.
+- Open question: why the gateway kept hanging after flights left the Service.
+
 ## Not done yet
 
-- Game day 03 (OOMKill) and 04 (Postgres down).
+- Game day 03 Step C: same tight limit with `GOMEMLIMIT`, to measure the GC's share.
+- Game day 04's open question (httptrace + conntrack on a repeat).
 - None of the README's "what I'd change at production scale" items is implemented; they're the backlog.
 
 ## Resource budget (requests, measured 2026-10-18 after game day 02)

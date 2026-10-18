@@ -89,6 +89,44 @@ $lg2 = Legend 64 482 @(@{ color = '#58a6ff'; label = 'latency (sum/count)' }, @{
 $svg2 = Svg 780 506 'Game day 02 &#8212; the HPA is blind to latency' 'Recorded from Prometheus (30s step). Latency up 320&#215; for 24 min; CPU flat; the 3rd pod was forced by hand.' ($p2a + $p2b + $lg2)
 [IO.File]::WriteAllText((Join-Path $OutDir 'gameday-02-hpa-blind.svg'), $svg2, (New-Object Text.UTF8Encoding $false))
 
+# --- Game day 03: working set vs the stepped-down limit -------------------------
+$f = U '2026-10-18T17:45:00Z'; $t = U '2026-10-18T18:30:00Z'
+$ws = Range 'max(container_memory_working_set_bytes{namespace="flightdeck", container="flights"}) / 1048576' $f $t
+$lim = Range 'min(kube_pod_container_resource_limits{namespace="flightdeck", container="flights", resource="memory"}) / 1048576' $f $t
+$rst = Range 'sum(increase(kube_pod_container_status_restarts_total{namespace="flightdeck", container="flights"}[2m]))' $f $t
+$ev3 = @(
+    @{ t = U '2026-10-18T17:52:51Z'; label = '32Mi'; color = '#d29922' }
+    @{ t = U '2026-10-18T17:59:24Z'; label = '150 req/s spike'; color = '#a371f7' }
+    @{ t = U '2026-10-18T18:04:09Z'; label = '8Mi'; color = '#d29922' }
+    @{ t = U '2026-10-18T18:10:37Z'; label = '6Mi'; color = '#f85149' }
+    @{ t = U '2026-10-18T18:23:28Z'; label = 'CrashLoop alert'; color = '#db61a2' }
+    @{ t = U '2026-10-18T18:25:47Z'; label = 'restore'; color = '#3fb950' }
+)
+$p3a = Panel 64 92 680 170 $f $t 40 @(@{ pts = $ws; color = '#58a6ff' }, @{ pts = $lim; color = '#f85149' }) @() $ev3 'Mi' 'flights memory: working set vs limit (Mi, limit clipped at 40)' $true
+$p3b = Panel 64 312 680 110 $f $t 8 @(@{ pts = $rst; color = '#f0883e' }) @() $ev3 '' 'flights container restarts (per 2 min)' $false
+$lg3 = Legend 64 462 @(@{ color = '#58a6ff'; label = 'working set (max of pods)' }, @{ color = '#f85149'; label = 'memory limit' }, @{ color = '#f0883e'; label = 'restarts' })
+$svg3 = Svg 780 486 'Game day 03 &#8212; OOMKill' 'Recorded from Prometheus (30s step). 32Mi and a 7.5&#215; spike never killed it; 8Mi did once; 6Mi crash-looped.' ($p3a + $p3b + $lg3)
+[IO.File]::WriteAllText((Join-Path $OutDir 'gameday-03-oom.svg'), $svg3, (New-Object Text.UTF8Encoding $false))
+
+# --- Game day 04: what clients got while Postgres was at zero -------------------
+$f = U '2026-10-18T18:30:00Z'; $t = U '2026-10-18T18:53:00Z'
+$api = 'namespace="flightdeck", service="gateway", route!~"/healthz|/readyz|/metrics"'
+$ok = Range "sum(rate(http_requests_total{$api, status=~`"2..`"}[1m])) or vector(0)" $f $t
+$e504 = Range "sum(rate(http_requests_total{$api, status=`"504`"}[1m])) or vector(0)" $f $t
+$e502 = Range "sum(rate(http_requests_total{$api, status=`"502`"}[1m])) or vector(0)" $f $t
+$rdy = Range 'sum(kube_pod_container_status_ready{namespace="flightdeck", container="flights"})' $f $t
+$ev4 = @(
+    @{ t = U '2026-10-18T18:34:15Z'; label = 'Postgres &#8594; 0'; color = '#f85149' }
+    @{ t = U '2026-10-18T18:38:39Z'; label = 'page fires'; color = '#db61a2' }
+    @{ t = U '2026-10-18T18:47:33Z'; label = 'Postgres &#8594; 1'; color = '#3fb950' }
+)
+$p4a = Panel 64 92 680 170 $f $t 24 @(@{ pts = $ok; color = '#3fb950' }, @{ pts = $e504; color = '#f85149' }, @{ pts = $e502; color = '#d29922' }) @() $ev4 '/s' 'Gateway responses per second' $true
+$p4b = Panel 64 312 680 110 $f $t 3 @(@{ pts = $rdy; color = '#58a6ff' }) @() $ev4 '' 'flights pods Ready (honest probe: 2 &#8594; 0)' $false
+$lg4 = Legend 64 462 @(@{ color = '#3fb950'; label = '2xx' }, @{ color = '#f85149'; label = '504 (5s timeout)' }, @{ color = '#d29922'; label = '502' })
+$svg4 = Svg 780 486 'Game day 04 &#8212; Postgres at zero' 'Recorded from Prometheus (30s step). 100% errors for 12 min, mostly 5s hangs; recovery 30.5s after scale-up.' ($p4a + $p4b + $lg4)
+[IO.File]::WriteAllText((Join-Path $OutDir 'gameday-04-postgres-down.svg'), $svg4, (New-Object Text.UTF8Encoding $false))
+"gd3 points: ws=$(@($ws).Count) limit=$(@($lim).Count) restarts=$(@($rst).Count)   gd4 points: ok=$(@($ok).Count) 504=$(@($e504).Count) 502=$(@($e502).Count) ready=$(@($rdy).Count)"
+
 "gd1 points: 5m=$(@($b5).Count) 1h=$(@($b1h).Count)   gd2 points: latency=$(@($lat).Count) cpu=$(@($cpu).Count) replicas=$(@($rep).Count)"
 "gd1 max burn5m=$(F (($b5 | Measure-Object v -Maximum).Maximum)) max burn1h=$(F (($b1h | Measure-Object v -Maximum).Maximum))"
 "gd2 max latency=$(F (($lat | Measure-Object v -Maximum).Maximum))ms  cpu range=$(F (($cpu | Measure-Object v -Minimum).Minimum))-$(F (($cpu | Measure-Object v -Maximum).Maximum))%  replicas=$((($rep | Select-Object -ExpandProperty v | Sort-Object -Unique) -join ','))"

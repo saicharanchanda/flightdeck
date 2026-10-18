@@ -181,21 +181,25 @@ flowchart TB
         </div>
       </article>
 
-      <article class="card pending">
-        <div class="placeholder">Not yet run</div>
+      <article class="card">
+        <img src="img/gameday-04-postgres-down.svg" alt="Gateway successes drop to zero and 504 timeouts rise while both flights pods go not-ready" loading="lazy">
         <div class="body">
-          <div><span class="tag todo">Game day 03 · planned</span></div>
-          <h3>OOMKill</h3>
-          <p>Drop the flights memory limit to 32Mi under load; watch the kill and restart loop and the <code>FlightdeckPodCrashLooping</code> alert.</p>
+          <div><span class="tag">Game day 04</span></div>
+          <h3>Postgres at zero: an honest probe, and clients still hung for 5s</h3>
+          <p>flights' readiness probe really checks the database — so every replica went NotReady at once and the Service emptied. 100% errors for 12 minutes.</p>
+          <p class="finding">Almost every failure was a 5-second hang (504), not a fast error: flights had no DB timeout of its own. No alert named Postgres. Recovery: 30.5s, no restarts.</p>
+          <a class="more" href="https://github.com/saicharanchanda/flightdeck/blob/main/docs/gameday-04-dependency.md">Full writeup →</a>
         </div>
       </article>
 
-      <article class="card pending">
-        <div class="placeholder">Not yet run</div>
+      <article class="card">
+        <img src="img/gameday-03-oom.svg" alt="flights working set stays flat near 8 megabytes while its memory limit steps down from 32 to 6; restarts appear only at 6" loading="lazy">
         <div class="body">
-          <div><span class="tag todo">Game day 04 · planned</span></div>
-          <h3>Dependency failure</h3>
-          <p>Scale Postgres to 0: how flights fails, how the gateway reports it, and whether readiness probes do the right thing.</p>
+          <div><span class="tag">Game day 03</span></div>
+          <h3>OOMKill: Go ignores the cgroup limit — but that isn't what killed it</h3>
+          <p><code>go_gc_gomemlimit_bytes</code> read <code>MaxInt64</code>. But flights' ~8Mi heap is flat even at 7.5× traffic; only a limit below that floor killed it.</p>
+          <p class="finding">6Mi crash-looped in a minute; the crash-loop alert fired before the SLO page. The chart now sets <code>GOMEMLIMIT</code> to 90% of every limit. The A/B run with it is still to do.</p>
+          <a class="more" href="https://github.com/saicharanchanda/flightdeck/blob/main/docs/gameday-03-oom.md">Full writeup →</a>
         </div>
       </article>
 

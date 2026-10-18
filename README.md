@@ -83,7 +83,9 @@ sequenceDiagram
 
 ## Incidents
 
-Game days run with a k6 load generator inside the cluster (`make load`, 20 req/s, 70% lookups / 20% boards / 10% subscribes). Each writeup has a timestamped timeline, every PromQL and LogQL query used, and a section on what didn't go as expected. The charts below are rendered from the metrics Prometheus recorded during each run (`scripts/render-gameday-charts.ps1`).
+Game days run with a k6 load generator inside the cluster (`make load`, 20 req/s, 70% lookups / 20% boards / 10% subscribes). Each writeup has a written-down prediction, a timestamped timeline, every PromQL and LogQL query used, and a section on what didn't go as expected. The charts below are rendered from the metrics Prometheus recorded during each run (`scripts/render-gameday-charts.ps1`).
+
+A pattern across all four: **SLO alerts arrive late.** Their long windows are diluted by the clean traffic before each fault: in three of four runs an SLO alert fired only *after* the fix (the ticket in 01 and 02, the page in 03), and in 02 the page never fired at all. Where a cause-specific alert existed (03's crash loop) it fired first; where none existed (04's Postgres) nothing pointed at the cause.
 
 ### 02 — Latency injection: the autoscaler wanted to scale *in* ⭐
 
@@ -101,13 +103,21 @@ Game days run with a k6 load generator inside the cluster (`make load`, 20 req/s
 
 → [docs/gameday-01-error-spike.md](docs/gameday-01-error-spike.md)
 
-### 03 — OOMKill · *not yet run*
+### 04 — Postgres at zero: an honest readiness probe, and clients still hung for 5s
 
-Planned: drop the flights memory limit to 32Mi under load, observe the kill/restart loop and `FlightdeckPodCrashLooping`.
+Postgres scaled to 0 for 13 minutes. flights' `/readyz` really does ping the database, and both replicas went NotReady within 49s — which emptied the Service, because the dependency is shared. **100% of API requests failed for 12 minutes, almost all by hanging for the gateway's full 5-second timeout** (504), not failing fast. flights had no DB timeout of its own, so its handlers queued for a pool connection until the *caller* gave up (goroutines 11 → 138; gateway 20 → 432). Every alert that fired named the gateway or flights; **none named Postgres**. Recovery took 30.5s from scale-up, with no restarts. One part — why the gateway kept hanging after flights left the Service — is left as an open question with a test plan.
 
-### 04 — Dependency failure · *not yet run*
+![Game day 04: gateway 2xx drops to zero and 504s rise while flights pods go not-ready](docs/img/gameday-04-postgres-down.svg)
 
-Planned: scale Postgres to 0; observe how flights fails, how the gateway reports it, and whether readiness probes behave.
+→ [docs/gameday-04-dependency.md](docs/gameday-04-dependency.md) — readiness semantics for shared dependencies, a timeout budget, circuit breaking, and the alert that should have said "PostgreSQL is down".
+
+### 03 — OOMKill: Go ignores the cgroup limit — but that isn't what killed it
+
+`go_gc_gomemlimit_bytes` read **`math.MaxInt64`**: without `GOMEMLIMIT`, Go's GC has no idea it's in a 32Mi container. But flights' memory is ~8Mi and **flat even at 7.5× traffic**, so 32Mi and a 150 req/s spike never killed it. It died only when the limit went below its working set: 8Mi → one kill; 6Mi → a crash loop within a minute, back-off doubling to the 5-minute cap, and `FlightdeckPodCrashLooping` firing 10 minutes in — before the SLO page. The chart now sets `GOMEMLIMIT` to 90% of every container's limit. The A/B run with it at the same tight limit is still to do.
+
+![Game day 03: flights working set stays flat while the limit steps down; restarts only at 6Mi](docs/img/gameday-03-oom.svg)
+
+→ [docs/gameday-03-oom.md](docs/gameday-03-oom.md) — also explains the notifier's 13:49 "restart" (a rolling replacement, clean exit, not an OOM) before the fault was injected.
 
 ---
 
@@ -115,6 +125,9 @@ Planned: scale Postgres to 0; observe how flights fails, how the gateway reports
 
 Bugs found by operating the system, not by reading it. Each is fixed, or documented where the fix is a design change.
 
+- **The Go runtime doesn't read the container's memory limit.** `go_gc_gomemlimit_bytes` = `math.MaxInt64` in every pod: the GC paced on `GOGC=100` with no idea a 6Mi limit existed. The chart now derives `GOMEMLIMIT` = 90% of each container's limit at render time (`goMemLimit.percent`), verified in the runtime afterwards (120795955 for 128Mi). Game day 03 also showed the limit of this fix: a service whose heap doesn't grow can't be saved from a limit below its floor.
+- **An honest readiness probe on a shared dependency empties the Service.** flights' `/readyz` checks Postgres, correctly; when Postgres died every replica failed it at once, so clients lost flights' precise 503 and got the gateway's generic 504 instead. Readiness should mean "this pod can serve and another couldn't"; shared-dependency failure should be a fast 503 from a Ready pod.
+- **No timeout means the caller's timeout.** flights' DB calls inherited the gateway's 5s context, so a dead database turned into 5s queues inside flights and hundreds of parked goroutines in the gateway. Each hop needs its own budget (500ms for a 1ms lookup).
 - **`route="unmatched"` hides middleware failures.** The access-log/metrics middleware reads chi's route pattern *after* the handler runs. Chaos (and any middleware that rejects early) answers before routing, so those requests carry no route. During game day 01 that was a useful clue; in a real incident an auth or rate-limit rejection would be just as anonymous in the RED-by-route view. Fix: middleware that writes a 5xx should log a `reason`.
 - **`$value` lies in multi-condition alerts.** In `A and B`, Prometheus returns **A's** value. The fast-burn alert said "17.67x burn over 5m" when it was the 1h window (the 5m burn was ~30×), and "budget gone in ~12h" was only true at exactly 14.4×. The descriptions now name the long window and compute time-to-exhaustion with a template query (`604800 / burnrate1h`): "gone in 16h 15m".
 - **PowerShell 5.1 `ConvertFrom-Json` emits a JSON array as one object.** `close-consoles.ps1` wrapped it in `@(...)`, got an array containing the array, and ran its loop once with every PID — a malformed CIM filter error, masked by a fallback that killed the processes anyway. Fixed by assigning to a variable first; a synthetic test went from 1 iteration to 3.
