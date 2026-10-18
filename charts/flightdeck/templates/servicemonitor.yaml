@@ -1,0 +1,24 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- range $name, $svc := .Values.services }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "flightdeck.serviceName" $ctx }}
+  labels:
+    {{- include "flightdeck.labels" $ | nindent 4 }}
+    {{- include "flightdeck.selectorLabels" $ctx | nindent 4 }}
+    {{- with $.Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "flightdeck.selectorLabels" $ctx | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $.Values.serviceMonitor.interval }}
+{{- end }}
+{{- end }}

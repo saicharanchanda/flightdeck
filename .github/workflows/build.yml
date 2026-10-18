@@ -24,6 +24,9 @@ jobs:
           go-version-file: libs/svckit/go.mod
           cache-dependency-path: "**/go.sum"
 
+      - name: Chart SQL matches db/
+        run: diff -ru db charts/flightdeck/files/db
+
       - name: go vet
         run: |
           for m in libs/svckit apps/gateway apps/flights apps/notifier; do

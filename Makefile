@@ -12,7 +12,16 @@ PGUSER ?= flightdeck
 PGDATABASE ?= flightdeck
 PSQL := psql -h $(PGHOST) -p $(PGPORT) -U $(PGUSER) -d $(PGDATABASE) -v ON_ERROR_STOP=1
 
-.PHONY: help tidy fmt build vet test check clean db-schema db-seed $(addprefix run-,$(SERVICES))
+# Helm chart
+CHART     := charts/flightdeck
+RELEASE   ?= flightdeck
+NAMESPACE ?= flightdeck
+KUBE_VERSION ?= 1.36.0
+CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+KUBECONFORM := kubeconform -strict -summary -kubernetes-version $(KUBE_VERSION) -schema-location default -schema-location '$(CRD_SCHEMAS)'
+
+.PHONY: help tidy fmt build vet test check clean db-schema db-seed $(addprefix run-,$(SERVICES)) \
+	chart-sql helm-deps helm-lint helm-template helm-validate
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -49,6 +58,23 @@ db-schema: ## Apply db/schema.sql to $(PGHOST)
 
 db-seed: db-schema ## Apply schema, then (re)load seed data
 	$(PSQL) -f db/seed.sql
+
+chart-sql: ## Copy db/*.sql into the chart (the db-init Job reads them from there)
+	mkdir -p $(CHART)/files/db && cp db/*.sql $(CHART)/files/db/
+
+helm-deps: ## Fetch the pinned postgresql/redis subcharts
+	helm dependency update $(CHART)
+
+helm-lint: chart-sql ## helm lint, with and without ServiceMonitors
+	helm lint $(CHART)
+	helm lint $(CHART) --set serviceMonitor.enabled=true
+
+helm-template: chart-sql ## Render the chart to stdout
+	@helm template $(RELEASE) $(CHART) -n $(NAMESPACE)
+
+helm-validate: helm-lint ## Render and validate with kubeconform (strict), incl. ServiceMonitor CRDs
+	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) | $(KUBECONFORM)
+	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) --set serviceMonitor.enabled=true | $(KUBECONFORM)
 
 clean: ## Remove build output
 	rm -rf $(BIN)

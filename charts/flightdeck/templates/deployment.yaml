@@ -1,0 +1,98 @@
+{{- range $name, $svc := .Values.services }}
+{{- $ctx := dict "root" $ "name" $name }}
+{{- $autoscaling := dig "autoscaling" "enabled" false $svc }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flightdeck.serviceName" $ctx }}
+  labels:
+    {{- include "flightdeck.labels" $ | nindent 4 }}
+    {{- include "flightdeck.selectorLabels" $ctx | nindent 4 }}
+spec:
+  {{- if not $autoscaling }}
+  replicas: {{ $svc.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "flightdeck.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flightdeck.labels" $ | nindent 8 }}
+        {{- include "flightdeck.selectorLabels" $ctx | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "flightdeck.serviceName" $ctx }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "flightdeck.selectorLabels" $ctx | nindent 14 }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.registry }}/{{ $svc.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "flightdeck.fullname" $ }}-config
+          env:
+            - name: HTTP_ADDR
+              value: ":{{ $svc.port }}"
+            {{- if dig "uses" "redis" false $svc }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.db.secretName }}
+                  key: redis-password
+            {{- end }}
+            {{- if dig "uses" "postgres" false $svc }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.db.secretName }}
+                  key: password
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            # Let endpoints and load balancers drop the pod before the
+            # process starts its 10s drain on SIGTERM.
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+{{- end }}

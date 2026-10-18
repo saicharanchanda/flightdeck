@@ -1,0 +1,159 @@
+# flightdeck chart values.
+#
+# Resource budget (CLAUDE.md): the whole release must request < 1 CPU and
+# < 2Gi memory, including Postgres, Redis, the db-init Job and the gateway
+# at its HPA maximum. See README for the arithmetic.
+
+# Images built by .github/workflows/build.yml. Tag = git short SHA; never "latest".
+image:
+  registry: ghcr.io/saicharanchanda
+  tag: a0c7c1b
+  pullPolicy: IfNotPresent
+
+# Non-secret config shared by all services (rendered into a ConfigMap).
+config:
+  logLevel: info
+  chaosEnabled: false
+  notificationsQueue: notifications
+
+# DB and Redis credentials live in this Secret. Passwords left empty are
+# generated once and then preserved across upgrades (looked up from the
+# existing Secret). The Secret is kept on uninstall so it keeps matching the
+# data on the retained PVCs.
+db:
+  secretName: flightdeck-db
+  username: flightdeck
+  database: flightdeck
+  password: ""
+  adminPassword: ""
+  redisPassword: ""
+
+services:
+  gateway:
+    repository: flightdeck-gateway
+    port: 8080
+    replicas: 2 # ignored while autoscaling is enabled
+    uses: { redis: true }
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 250m, memory: 128Mi }
+
+  flights:
+    repository: flightdeck-flights
+    port: 8081
+    replicas: 2 # 2 so the PDB (minAvailable 1) still allows node drains
+    uses: { postgres: true }
+    pdb:
+      enabled: true
+      minAvailable: 1
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 250m, memory: 128Mi }
+
+  notifier:
+    repository: flightdeck-notifier
+    port: 8082 # admin port: probes, metrics, chaos only
+    replicas: 1
+    uses: { redis: true }
+    resources:
+      requests: { cpu: 25m, memory: 32Mi }
+      limits: { cpu: 100m, memory: 64Mi }
+
+# Shared by every app container (pod + container security contexts).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532 # distroless "nonroot"
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# Applies db/schema.sql then db/seed.sql after every install and upgrade.
+# Note: seed.sql truncates and reloads the flights table each time.
+dbInit:
+  enabled: true
+  image:
+    # Digest is taken from postgresql.image.digest so the two never diverge.
+    repository: registry-1.docker.io/bitnami/postgresql
+  activeDeadlineSeconds: 600
+  backoffLimit: 3
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 64Mi }
+
+# Inert until kube-prometheus-stack (and its CRDs) is installed.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels:
+    release: kube-prometheus-stack
+
+# Only the gateway accepts traffic from outside the namespace. The metrics
+# namespace may additionally reach the services' http port for scraping.
+# Enforcement requires the VPC CNI network policy agent to be enabled.
+networkPolicy:
+  enabled: true
+  metricsNamespace: monitoring
+
+# --- Subcharts -------------------------------------------------------------
+# Docker Hub's bitnami/* namespace only publishes "latest", so images are
+# pinned by digest. Update the digests deliberately, never let them float.
+
+postgresql:
+  enabled: true
+  fullnameOverride: flightdeck-postgresql
+  architecture: standalone
+  image:
+    digest: sha256:889db6427034525f50071945ddf808fbb77f8a52c2c8d3a7a75d39a167373566
+  auth:
+    username: flightdeck
+    database: flightdeck
+    existingSecret: flightdeck-db
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    networkPolicy:
+      enabled: false # covered by this chart's NetworkPolicies
+    persistence:
+      enabled: true
+      storageClass: gp3
+      size: 2Gi
+    resources:
+      requests: { cpu: 150m, memory: 384Mi }
+      limits: { cpu: 500m, memory: 768Mi }
+
+redis:
+  enabled: true
+  fullnameOverride: flightdeck-redis
+  architecture: standalone
+  image:
+    digest: sha256:33dbb7a4be39e73f0d5178e9040061ecb708946f55169657aa6897ba0a2c71d9
+  auth:
+    enabled: true
+    existingSecret: flightdeck-db
+    existingSecretPasswordKey: redis-password
+  networkPolicy:
+    enabled: false # covered by this chart's NetworkPolicies
+  master:
+    persistence:
+      enabled: true
+      storageClass: gp3
+      size: 2Gi
+    resources:
+      requests: { cpu: 50m, memory: 96Mi }
+      limits: { cpu: 200m, memory: 192Mi }

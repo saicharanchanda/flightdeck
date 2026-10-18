@@ -1,0 +1,93 @@
+{{- if .Values.dbInit.enabled }}
+{{- $name := printf "%s-db-init" (include "flightdeck.fullname" .) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-sql
+  labels:
+    {{- include "flightdeck.labels" . | nindent 4 }}
+data:
+  # Copied from db/ by `make chart-sql`; CI fails if they drift.
+  schema.sql: |-
+    {{- .Files.Get "files/db/schema.sql" | nindent 4 }}
+  seed.sql: |-
+    {{- .Files.Get "files/db/seed.sql" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "flightdeck.labels" . | nindent 4 }}
+    app.kubernetes.io/name: db-init
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.dbInit.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.dbInit.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "flightdeck.labels" . | nindent 8 }}
+        app.kubernetes.io/name: db-init
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001 # bitnami images' non-root user
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: db-init
+          # Same image (and digest) as the Postgres subchart: it ships psql.
+          image: "{{ .Values.dbInit.image.repository }}@{{ .Values.postgresql.image.digest }}"
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              # Post-install hooks don't wait for the StatefulSet, so wait here.
+              until pg_isready -q; do echo "waiting for $PGHOST:$PGPORT"; sleep 2; done
+              psql -v ON_ERROR_STOP=1 -f /sql/schema.sql
+              psql -v ON_ERROR_STOP=1 -f /sql/seed.sql
+              echo "flights rows: $(psql -tAc 'SELECT count(*) FROM flights')"
+          env:
+            - name: PGHOST
+              value: {{ .Values.postgresql.fullnameOverride | quote }}
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: {{ .Values.db.username | quote }}
+            - name: PGDATABASE
+              value: {{ .Values.db.database | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.db.secretName }}
+                  key: password
+            - name: HOME
+              value: /tmp
+          resources:
+            {{- toYaml .Values.dbInit.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: sql
+          configMap:
+            name: {{ $name }}-sql
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+{{- end }}

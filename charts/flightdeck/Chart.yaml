@@ -1,0 +1,18 @@
+apiVersion: v2
+name: flightdeck
+description: Flight-operations observability demo — gateway, flights and notifier services with Postgres and Redis.
+type: application
+version: 0.1.0
+appVersion: "a0c7c1b"
+home: https://github.com/saicharanchanda/flightdeck
+sources:
+  - https://github.com/saicharanchanda/flightdeck
+dependencies:
+  - name: postgresql
+    version: 18.12.4
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: 28.3.1
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

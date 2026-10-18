@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "flightdeck.fullname" . }}-config
+  labels:
+    {{- include "flightdeck.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  CHAOS_ENABLED: {{ .Values.config.chaosEnabled | quote }}
+  NOTIFICATIONS_QUEUE: {{ .Values.config.notificationsQueue | quote }}
+  FLIGHTS_URL: {{ printf "http://%s:%v" (include "flightdeck.serviceName" (dict "root" . "name" "flights")) .Values.services.flights.port | quote }}
+  REDIS_ADDR: {{ include "flightdeck.redisAddr" . | quote }}
+  POSTGRES_HOST: {{ .Values.postgresql.fullnameOverride | quote }}
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: {{ .Values.db.username | quote }}
+  POSTGRES_DB: {{ .Values.db.database | quote }}
+  POSTGRES_SSLMODE: "disable"
