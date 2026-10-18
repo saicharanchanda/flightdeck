@@ -142,6 +142,22 @@ grafana:
     server:
       root_url: "%(protocol)s://%(domain)s/grafana/"
       serve_from_sub_path: true
+  # Provisioned, not clicked: Loki (platform/loki-values.yaml).
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100
+      jsonData:
+        maxLines: 1000
+        # request_id in a log line becomes a link to every log of that request.
+        derivedFields:
+          - name: request_id
+            matcherType: regex
+            matcherRegex: '"request_id":"(\w+)"'
+            datasourceUid: loki
+            url: '{namespace="flightdeck"} | json | request_id="$${__value.raw}"'
   # With serve_from_sub_path, /metrics 302s to root_url (domain=localhost),
   # which Prometheus can't follow. Scrape the real path instead.
   serviceMonitor:

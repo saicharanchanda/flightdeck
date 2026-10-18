@@ -27,7 +27,7 @@ INGRESS_CIDR ?= $(shell curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr
 RENDER_SET := --set 'ingress.inboundCIDRs={203.0.113.10/32}'
 
 .PHONY: help tidy fmt build vet test check clean db-schema db-seed $(addprefix run-,$(SERVICES)) \
-	chart-sql helm-deps helm-lint helm-template helm-validate deploy platform-lbc platform-monitoring prometheus-ui grafana-ui port-forward test-api
+	chart-sql helm-deps helm-lint helm-template helm-validate deploy platform-lbc platform-monitoring platform-logging prometheus-ui grafana-ui port-forward test-api
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -117,6 +117,18 @@ platform-monitoring: ## Validate, then install/upgrade kube-prometheus-stack in 
 		-n monitoring -f $(KPS_VALUES) $(KPS_SET) | $(KUBECONFORM) -skip CustomResourceDefinition
 	helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack --version $(KPS_VERSION) \
 		-n monitoring -f $(KPS_VALUES) $(KPS_SET) --wait --timeout 10m
+
+LOKI_VERSION  := 7.3.0
+ALLOY_VERSION := 1.13.1
+# ServiceMonitors only render when the CRD API is present; tell offline templates it is.
+SM_API := --api-versions monitoring.coreos.com/v1 --api-versions monitoring.coreos.com/v1/ServiceMonitor
+
+platform-logging: ## Validate, then install/upgrade Loki (SingleBinary) and Alloy (DaemonSet) in monitoring
+	helm repo add grafana https://grafana.github.io/helm-charts --force-update >/dev/null
+	helm template loki grafana/loki --version $(LOKI_VERSION) -n monitoring -f platform/loki-values.yaml $(SM_API) | $(KUBECONFORM)
+	helm template alloy grafana/alloy --version $(ALLOY_VERSION) -n monitoring -f platform/alloy-values.yaml $(SM_API) | $(KUBECONFORM)
+	helm upgrade --install loki grafana/loki --version $(LOKI_VERSION) -n monitoring -f platform/loki-values.yaml --wait --timeout 10m
+	helm upgrade --install alloy grafana/alloy --version $(ALLOY_VERSION) -n monitoring -f platform/alloy-values.yaml --wait --timeout 10m
 
 prometheus-ui: ## Port-forward Prometheus to http://localhost:9090
 	kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090

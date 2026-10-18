@@ -31,6 +31,7 @@ Chart (`charts/flightdeck`):
 | `deploy` | `helm-validate`, then create the `flightdeck` namespace if needed and `helm upgrade --install --wait`. The ALB only admits `INGRESS_CIDR` (default: your current public IP) |
 | `platform-lbc` | Validate and install the AWS Load Balancer Controller 3.6.0 (IRSA) from `platform/aws-load-balancer-controller/` |
 | `platform-monitoring` | Validate and install kube-prometheus-stack 92.10.1 into `monitoring`. Needs the `grafana-admin` Secret; Grafana joins the gateway's ALB at `/grafana`, restricted to `INGRESS_CIDR` |
+| `platform-logging` | Validate and install Loki 3.6 (chart 7.3.0, SingleBinary, 72h retention) and Alloy (chart 1.13.1, DaemonSet) into `monitoring` |
 | `prometheus-ui` | Port-forward Prometheus to <http://localhost:9090> |
 | `grafana-ui` | Port-forward Grafana to <http://localhost:3000/grafana/> |
 | `port-forward` | Forward the gateway Service to `localhost:8080` |
