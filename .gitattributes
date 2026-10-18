@@ -1,0 +1,3 @@
+# Linux-targeted repo: keep LF everywhere so Makefile, shell and YAML work
+# regardless of the checkout machine's core.autocrlf.
+* text=auto eol=lf
