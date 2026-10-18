@@ -12,6 +12,12 @@ metadata:
     {{- include "flightdeck.selectorLabels" (dict "root" . "name" "gateway") | nindent 4 }}
   annotations:
     alb.ingress.kubernetes.io/load-balancer-name: {{ .Values.ingress.loadBalancerName | quote }}
+    {{- with .Values.ingress.groupName }}
+    # Shared ALB: other Ingresses (e.g. Grafana at /grafana) join this group.
+    # The catch-all "/" is evaluated last.
+    alb.ingress.kubernetes.io/group.name: {{ . | quote }}
+    alb.ingress.kubernetes.io/group.order: {{ $.Values.ingress.groupOrder | quote }}
+    {{- end }}
     alb.ingress.kubernetes.io/scheme: internet-facing
     # Register pod IPs directly (VPC CNI); no NodePort hop.
     alb.ingress.kubernetes.io/target-type: ip

@@ -27,7 +27,7 @@ INGRESS_CIDR ?= $(shell curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr
 RENDER_SET := --set 'ingress.inboundCIDRs={203.0.113.10/32}'
 
 .PHONY: help tidy fmt build vet test check clean db-schema db-seed $(addprefix run-,$(SERVICES)) \
-	chart-sql helm-deps helm-lint helm-template helm-validate deploy platform-lbc port-forward test-api
+	chart-sql helm-deps helm-lint helm-template helm-validate deploy platform-lbc platform-monitoring prometheus-ui grafana-ui port-forward test-api
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -102,6 +102,27 @@ platform-lbc: ## Validate, then install/upgrade the AWS Load Balancer Controller
 	kubectl apply -f $(LBC_DIR)/serviceaccount.yaml
 	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller --version $(LBC_VERSION) \
 		-n kube-system -f $(LBC_DIR)/values.yaml --wait --timeout 5m
+
+KPS_VERSION := 92.10.1
+KPS_VALUES  := platform/kube-prometheus-stack-values.yaml
+# The Grafana Ingress shares the flightdeck ALB; it must carry the same
+# inbound CIDR or the group's security group opens to 0.0.0.0/0.
+KPS_SET = --set-string 'grafana.ingress.annotations.alb\.ingress\.kubernetes\.io/inbound-cidrs=$(INGRESS_CIDR)'
+
+platform-monitoring: ## Validate, then install/upgrade kube-prometheus-stack in monitoring (needs Secret grafana-admin)
+	@case "$(INGRESS_CIDR)" in /32) echo "Could not detect your public IP; pass INGRESS_CIDR=a.b.c.d/32" >&2; exit 1;; esac
+	@kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1 || { echo "Create the grafana-admin Secret first (see $(KPS_VALUES))" >&2; exit 1; }
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update >/dev/null
+	helm template kube-prometheus-stack prometheus-community/kube-prometheus-stack --version $(KPS_VERSION) \
+		-n monitoring -f $(KPS_VALUES) $(KPS_SET) | $(KUBECONFORM) -skip CustomResourceDefinition
+	helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack --version $(KPS_VERSION) \
+		-n monitoring -f $(KPS_VALUES) $(KPS_SET) --wait --timeout 10m
+
+prometheus-ui: ## Port-forward Prometheus to http://localhost:9090
+	kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+
+grafana-ui: ## Port-forward Grafana to http://localhost:3000/grafana/
+	kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 
 port-forward: ## Forward the gateway Service to localhost:8080 (for test-api)
 	kubectl -n $(NAMESPACE) port-forward svc/$(RELEASE)-gateway 8080:8080

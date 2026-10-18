@@ -95,9 +95,9 @@ dbInit:
     requests: { cpu: 25m, memory: 32Mi }
     limits: { cpu: 100m, memory: 64Mi }
 
-# Inert until kube-prometheus-stack (and its CRDs) is installed.
+# Requires the monitoring.coreos.com CRDs (platform/kube-prometheus-stack-values.yaml).
 serviceMonitor:
-  enabled: false
+  enabled: true
   interval: 30s
   labels:
     release: kube-prometheus-stack
@@ -109,6 +109,10 @@ serviceMonitor:
 ingress:
   enabled: true
   loadBalancerName: flightdeck
+  # ALB IngressGroup shared with Grafana (platform/kube-prometheus-stack-values.yaml).
+  # Every member must set inbound-cidrs: the SG admits the union.
+  groupName: flightdeck
+  groupOrder: 100
   inboundCIDRs: []
   allowAllSources: false
 

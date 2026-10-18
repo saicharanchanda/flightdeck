@@ -30,6 +30,9 @@ Chart (`charts/flightdeck`):
 | `helm-validate` | Render and run `kubeconform -strict` against Kubernetes 1.36, ServiceMonitor CRDs included |
 | `deploy` | `helm-validate`, then create the `flightdeck` namespace if needed and `helm upgrade --install --wait`. The ALB only admits `INGRESS_CIDR` (default: your current public IP) |
 | `platform-lbc` | Validate and install the AWS Load Balancer Controller 3.6.0 (IRSA) from `platform/aws-load-balancer-controller/` |
+| `platform-monitoring` | Validate and install kube-prometheus-stack 92.10.1 into `monitoring`. Needs the `grafana-admin` Secret; Grafana joins the gateway's ALB at `/grafana`, restricted to `INGRESS_CIDR` |
+| `prometheus-ui` | Port-forward Prometheus to <http://localhost:9090> |
+| `grafana-ui` | Port-forward Grafana to <http://localhost:3000/grafana/> |
 | `port-forward` | Forward the gateway Service to `localhost:8080` |
 | `test-api` | Smoke-test every gateway endpoint at `BASE_URL` (default `http://localhost:8080`) |
 

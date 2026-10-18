@@ -6,6 +6,7 @@ bin/
 coverage.*
 
 # Secrets — never commit (see CLAUDE.md)
+.secrets/
 kubeconfig
 *kubeconfig*
 .kube/

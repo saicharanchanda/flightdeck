@@ -1,0 +1,185 @@
+# prometheus-community/kube-prometheus-stack 92.10.1 (operator v0.94.1),
+# release "kube-prometheus-stack" in namespace "monitoring". Install with
+# `make platform-monitoring`, which also passes the ALB inbound CIDR (your
+# current public IP; never committed — the repo is public).
+#
+# Prerequisite: the Grafana admin Secret, created by hand:
+#   kubectl -n monitoring create secret generic grafana-admin \
+#     --from-literal=admin-user=admin --from-literal=admin-password='<choose one>'
+#
+# Every container has requests and limits. Steady-state requests for the
+# whole release: ~460m CPU / ~1088Mi (Prometheus 210m/544Mi incl. reloader).
+
+# --- Control plane: EKS doesn't expose these, so their targets would be
+# permanently DOWN and their alerts would fire forever.
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+
+defaultRules:
+  rules:
+    etcd: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeControllerManager: false
+
+# --- Prometheus ---------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    replicas: 1
+    retention: 3d
+    retentionSize: 8GB # stay inside the 10Gi volume even if 3d grows
+    # Select ServiceMonitors/PodMonitors/rules in every namespace, not only
+    # ones labelled for this Helm release.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 10Gi
+
+# --- Alertmanager -------------------------------------------------------------
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 96Mi
+
+# --- Operator (and the config-reloader sidecars it injects) --------------------
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 192Mi
+  prometheusConfigReloader:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+  admissionWebhooks:
+    patch:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 50m
+          memory: 64Mi
+
+# --- Grafana --------------------------------------------------------------------
+grafana:
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: gp3
+    accessModes: [ReadWriteOnce]
+    size: 5Gi
+  # RWO volume: a rolling update would deadlock with the new pod waiting for
+  # the old pod's volume.
+  deploymentStrategy:
+    type: Recreate
+  # fsGroup already makes the EBS volume writable for Grafana's uid.
+  initChownData:
+    enabled: false
+  testFramework:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+  # The dashboard/datasource sidecars list every matching ConfigMap/Secret
+  # cluster-wide at startup; 96Mi was OOMKilled on that burst. The limit has
+  # headroom; the request (what the scheduler reserves) stays small.
+  sidecar:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 48Mi
+      limits:
+        cpu: 50m
+        memory: 192Mi
+  # Served under /grafana on the shared flightdeck ALB.
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s/grafana/"
+      serve_from_sub_path: true
+  # With serve_from_sub_path, /metrics 302s to root_url (domain=localhost),
+  # which Prometheus can't follow. Scrape the real path instead.
+  serviceMonitor:
+    path: /grafana/metrics
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    path: /grafana
+    pathType: Prefix
+    hosts: []
+    annotations:
+      # Same IngressGroup and LB name as the flightdeck gateway Ingress ->
+      # one ALB. Lower order = evaluated first, so /grafana wins over /.
+      alb.ingress.kubernetes.io/group.name: flightdeck
+      alb.ingress.kubernetes.io/group.order: "10"
+      alb.ingress.kubernetes.io/load-balancer-name: flightdeck
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+      alb.ingress.kubernetes.io/healthcheck-path: /grafana/api/health
+      alb.ingress.kubernetes.io/success-codes: "200"
+      alb.ingress.kubernetes.io/tags: project=flightdeck,cluster=eks-practice
+      # alb.ingress.kubernetes.io/inbound-cidrs is set at install time.
+      # It MUST be set: the group's SG admits the union of all members'
+      # CIDRs, and a member without it defaults to 0.0.0.0/0.
+
+# --- Exporters --------------------------------------------------------------------
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
