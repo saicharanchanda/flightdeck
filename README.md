@@ -2,9 +2,11 @@
 
 **Three Go microservices for a flight-status API, run on Amazon EKS with the observability an SRE team would expect: SLOs with multi-window burn-rate alerts, RED dashboards, structured logs traced by request ID, and fault-injection game days written up honestly.**
 Everything is code: one Helm chart for the app, committed values for every upstream chart, IAM policies as JSON, dashboards and alert rules in Git, and a `make` target for each step.
-It was built and operated on a two-node cluster (2 × m7i-flex.large) for roughly **$0.36/hour at list price**; the account's credits covered it, so the actual bill was $0.
+It was built, operated through four game days and torn down on a two-node cluster (2 × m7i-flex.large) over about 26 hours. **Usage came to ≈ $8.30**, all covered by account credits ([Cost](#cost)).
 
-**Site:** <https://saicharanchanda.github.io/flightdeck/> · **Writeups:** [game day 01](docs/gameday-01-error-spike.md), [game day 02](docs/gameday-02-latency.md) · **Journal:** [docs/journal.md](docs/journal.md)
+> **Status:** the cluster was deleted on 2026-10-19 and a sweep confirmed no AWS resources remain ([teardown](docs/teardown.md)). The repo is the deliverable. [`infra/cluster.yaml`](infra/cluster.yaml) and the [Quickstart](#quickstart) rebuild everything from an empty account.
+
+**Site:** <https://saicharanchanda.github.io/flightdeck/> · **Game days:** [01 errors](docs/gameday-01-error-spike.md), [02 latency](docs/gameday-02-latency.md), [03 OOMKill](docs/gameday-03-oom.md), [04 Postgres down](docs/gameday-04-dependency.md) · **Teardown:** [docs/teardown.md](docs/teardown.md) · **Journal:** [docs/journal.md](docs/journal.md)
 
 > **Headline finding:** under a 320× latency regression the gateway's
 > CPU-based autoscaler didn't just fail to scale out — by its own arithmetic
@@ -14,7 +16,7 @@ It was built and operated on a two-node cluster (2 × m7i-flex.large) for roughl
 
 ## Architecture
 
-EKS `eks-practice` (Kubernetes 1.36) on 2 × m7i-flex.large in us-east-1: default VPC, public subnets, no NAT gateway. Images come from GHCR, tagged by git SHA.
+EKS `eks-practice` (Kubernetes 1.36) ran on 2 × m7i-flex.large in us-east-1: default VPC, public subnets, no NAT gateway. Images come from GHCR, tagged by git SHA.
 
 ```mermaid
 flowchart TB
@@ -135,6 +137,8 @@ Bugs found by operating the system, not by reading it. Each is fixed, or documen
 - **Coarse histograms mislead.** With all requests at ~805ms, `histogram_quantile` reported p50 0.75s and p99 0.995s — the midpoint and edge of the `0.5–1.0s` bucket. `sum/count` and Loki's `unwrap duration_ms` gave the truth. There is also no 300ms bucket, so the "95% under 300ms" SLO is measured at 250ms.
 - **An IngressGroup's security group is the union of its members.** Joining Grafana to the gateway's ALB meant every member must carry `inbound-cidrs`; one without it defaults to `0.0.0.0/0` and opens the whole ALB. Both Ingresses now require it, and the chart refuses to render without it.
 - **Sizing from guesses fails; sizing from usage works.** Grafana's sidecars were OOMKilled at 96Mi, then Grafana itself at 384Mi; it idles at ~360Mi. Requests are now set to observed usage with ~2× headroom on limits.
+- **A stopped clock service looked like bad credentials.** On teardown day every AWS call failed with `InvalidSignatureException` / `SignatureExpired`, while `kubectl` still worked. The workstation was 604s behind: Windows Time (`w32time`) was stopped, and SigV4 rejects signatures more than 300s off. Setting the time by hand didn't help (NTP looked blocked); starting the service did. Now the first check for a signing error is `w32tm /query /status`, before touching keys. ([docs/teardown.md](docs/teardown.md))
+- **`helm uninstall` isn't teardown.** StatefulSet PVCs (Postgres, Redis, Prometheus) outlived their releases, and so would their EBS volumes have, once the CSI driver was gone. Grafana's and Loki's didn't: each chart decides. And the ALB belongs to the controller, not to EKS, so deleting the cluster first would have stranded it. Teardown order is in [docs/teardown.md](docs/teardown.md).
 - **Docker Hub's `bitnami/*` only publishes `latest` now.** The no-`latest` rule is kept by pinning the Postgres and Redis images by digest.
 
 ---
@@ -222,13 +226,11 @@ URLs for everything are in [docs/endpoints.md](docs/endpoints.md); on Windows, `
 | `charts/flightdeck` | The app chart: Deployments, HPA, PDBs, NetworkPolicies, ServiceMonitors, Ingress, db-init hook |
 | `platform/` | Committed values for every upstream chart |
 | `observability/` | SLO PrometheusRule and Grafana dashboards as JSON |
-| `infra/` | IAM policies and trust policies (JSON), gp3 StorageClass |
+| `infra/` | eksctl cluster config, IAM policies and trust policies (JSON), gp3 StorageClass |
 | `loadtest/` | k6 script, Job manifest, per-pod chaos helper |
 | `docs/` | Game days, runbooks, identity notes, endpoints, journal, the GitHub Pages site |
 
----
-
-### CI
+## CI
 
 `.github/workflows/build.yml`: `go vet` + `go test` on all four modules and a check that the chart's SQL copy matches `db/`; then per service an image build pushed to GHCR (short-SHA tag, plus `main`; never `latest`); then a **Trivy** scan of each image that fails on fixable CRITICAL vulnerabilities and uploads the full report to GitHub code scanning. Dependabot (`.github/dependabot.yml`) opens weekly grouped updates for the Go modules and the Actions.
 

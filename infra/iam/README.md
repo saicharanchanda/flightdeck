@@ -1,7 +1,9 @@
 # IAM for eks-practice
 
-What exists in account `<AWS_ACCOUNT_ID>` (us-east-1) for the cluster, and how it
-was created. Policy documents in this folder are the exact JSON used.
+What existed in account `<AWS_ACCOUNT_ID>` (us-east-1) for the cluster, and
+how it was created. Policy documents in this folder are the exact JSON used.
+Everything here was deleted on 2026-10-19 ([docs/teardown.md](../../docs/teardown.md)).
+`eksctl create cluster -f infra/cluster.yaml` recreates all of it.
 
 > The AWS account ID and the cluster's OIDC provider ID are redacted
 > deliberately as `<AWS_ACCOUNT_ID>` and `<OIDC_ID>`; render them with the
@@ -82,3 +84,43 @@ aws eks create-addon --cluster-name eks-practice \
 ```
 
 The default StorageClass using it is [`infra/k8s/storageclass-gp3.yaml`](../k8s/storageclass-gp3.yaml).
+
+## Cluster and node roles (created outside the project)
+
+Two more roles were found during teardown. This file hadn't listed them:
+
+| Role | Attached (AWS managed) | Created |
+|---|---|---|
+| `eks-practice-cluster-role` | `AmazonEKSClusterPolicy` | 2026-10-18 06:18Z, console |
+| `eks-practice-node-role` | `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, `AmazonEC2ContainerRegistryReadOnly`; instance profile `eks-practice-node-role` | 2026-10-18 06:19Z, console |
+
+CloudTrail shows both were created in the console on 2026-10-18, before the
+cluster existed and before anything in this repo. They were
+prerequisites for the console's "create cluster" and "create node group"
+forms. The repo only ever recorded what it created itself (the OIDC provider,
+the LB Controller policy and role, the EBS CSI role), so these were missing.
+
+**The roles the project depended on most weren't recorded by the
+project.** Without them neither the control plane nor the nodes would have
+run, yet they appeared nowhere in the repo until `list-roles` turned them up
+in teardown. The node role also carried an instance profile, which has to be
+removed before the role can be deleted.
+
+[`infra/cluster.yaml`](../cluster.yaml) closes the gap for a rebuild: eksctl
+creates and deletes its own cluster and node roles, so nothing depends on
+console-made IAM any more.
+
+Equivalent commands, for the record:
+
+```bash
+aws iam create-role --role-name eks-practice-cluster-role \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}]}'
+aws iam attach-role-policy --role-name eks-practice-cluster-role \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+
+aws iam create-role --role-name eks-practice-node-role \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+for p in AmazonEKSWorkerNodePolicy AmazonEKS_CNI_Policy AmazonEC2ContainerRegistryReadOnly; do
+  aws iam attach-role-policy --role-name eks-practice-node-role --policy-arn arn:aws:iam::aws:policy/$p
+done
+```

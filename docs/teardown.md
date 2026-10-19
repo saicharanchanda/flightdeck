@@ -1,13 +1,14 @@
 # Teardown
 
 Run on 2026-10-19, 09:23–10:30Z, against `eks-practice` in us-east-1. This
-page is the order that was actually used, the two traps that matter, and what
-the orphan sweep found. A reusable command runbook follows.
-Pre-teardown snapshot: [final-state.md](final-state.md).
+page is the order that was actually used, the three traps worth recording,
+and what the orphan sweep found. A reusable command runbook follows.
+Pre-teardown snapshot and final billing: [final-state.md](final-state.md).
 
-## The two rules
+## Three traps
 
-**1. Load balancers survive cluster deletion.** The AWS Load Balancer
+**1. Load balancers survive cluster deletion.** The ALB isn't an EKS
+resource. EKS doesn't know it exists. The AWS Load Balancer
 Controller created the ALB, its target groups and its security groups. Only
 the controller deletes them, and only while it's running and sees the Ingress
 go away. Delete the cluster first and the ALB stays, billing ~$0.0225/h plus
@@ -39,6 +40,26 @@ The same goes for anything annotated `helm.sh/resource-policy: keep` (the
 `flightdeck-db` Secret) and for objects applied outside Helm (the
 `flightdeck-slo` PrometheusRule and the two dashboard ConfigMaps). All of
 them were deleted by hand.
+
+**3. A stopped clock service looks like a credentials problem.** Teardown
+started with every AWS call failing. The workstation clock was **604 s
+behind**. SigV4 signs the request time, and AWS rejects any signature more
+than 5 minutes (300 s) off. Depending on the client and service, the error was
+`InvalidSignatureException` or `SignatureExpired`. The first reads like bad
+keys; the second points at the clock if you read the rest of the message
+(`Signature expired: <signed time> is now earlier than <server time - 5 min>`).
+
+`kubectl` kept working throughout, which made the AWS CLI's credentials look
+like the problem. Setting the clock by hand didn't help: NTP looked blocked. The
+real cause was that the **Windows Time service (`w32time`) was stopped**.
+Starting it and setting it to Automatic brought the offset to ~1 s.
+
+Check before you debug credentials:
+
+```powershell
+w32tm /query /status          # "The service has not been started" = this trap
+w32tm /stripchart /computer:time.windows.com /samples:1 /dataonly
+```
 
 ## Order used
 

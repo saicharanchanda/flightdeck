@@ -41,6 +41,64 @@ By day (Cost Explorer lags up to ~24h, so the last day is incomplete):
 
 Account plan: **FREE**, remaining credits **$105.5**, plan expires **2026-10-22T17:38:08.343000+00:00**.
 
+## Final billing, after teardown (Cost Explorer, at 2026-10-19T10:38Z)
+
+All AWS resources are gone. The final sweep at 10:38Z found zero of each of
+these in us-east-1 and ap-south-1:
+
+- EC2 instances, EBS volumes, snapshots, Elastic IPs
+- load balancers (v2 and classic), target groups, EKS clusters
+- CloudWatch log groups, non-default security groups
+
+In IAM, nothing was left: no `eks-practice` roles or instance profiles, no
+customer-managed policies, no OIDC providers.
+
+Month to date, usage records only:
+
+| | Usage | Credits | Billed |
+|---|---|---|---|
+| Whole account | $5.7126 | −$5.7126 | **$0.00** |
+
+Usage by region: us-east-1 is flightdeck. ap-south-2 is an unrelated project
+(prod-eks) and holds all of the ECR line.
+
+```text
+us-east-1    4.8677
+ap-south-2   0.8448
+ap-south-1   0.0000
+eu-north-1   0.0000
+```
+
+flightdeck (us-east-1) by usage type:
+
+```text
+BoxUsage:m7i-flex.large               26 instance-hours     2.4898
+USE1-AmazonEKS-Hours:perCluster       16.13 cluster-hours   1.6127
+USE1-PublicIPv4:InUseAddress          81.16 address-hours   0.4058
+USE1-PublicIPv4:IdleAddress           0.25 address-hours    0.0013
+LoadBalancerUsage                     11 LB-hours           0.2475
+EBS:VolumeUsage.gp3                   0.74 GB-month         0.0590
+DataTransfer-Regional-Bytes           4.16 GB               0.0316
+USE1-APIRequest (Cost Explorer)       2                     0.0200
+other (LCU, S3, KMS, inter-region)                          0.0001
+TOTAL                                                       4.8677
+```
+
+**Not posted yet:** all of it is 2026-10-18 UTC. Cost Explorer hadn't posted
+any 2026-10-19 usage (00:00Z until the cluster was deleted at 10:09Z) by
+10:38Z. Using the 10-18 rates, those ~10 hours come to about $3.45:
+
+- EKS ~10.2 h: $1.02
+- nodes ~20 instance-hours: $1.93
+- ALB ~9.5 h: $0.21
+- IPv4: $0.25
+- EBS: $0.04
+
+So the project's total usage is **≈ $8.30, all covered by credits**.
+
+Remaining credits: **$105.50** (FREE plan, expires 2026-10-22T17:38Z). Expect
+roughly $3.45 more to be drawn once 2026-10-19 posts.
+
 ## `helm list -A`
 
 ```text
