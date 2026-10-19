@@ -32,3 +32,6 @@ Thumbs.db
 # Local Go workspace (each module builds on its own)
 go.work
 go.work.sum
+
+# Placeholder-rendered IAM documents (infra/iam/README.md)
+.rendered/

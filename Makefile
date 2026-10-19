@@ -93,13 +93,16 @@ deploy: helm-validate ## Validate, then install/upgrade into $(NAMESPACE); ALB r
 
 LBC_VERSION := 3.6.0
 LBC_DIR     := platform/aws-load-balancer-controller
+# The account ID is redacted in the repo as <AWS_ACCOUNT_ID>; filled in here.
+AWS_ACCOUNT_ID ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 
 platform-lbc: ## Validate, then install/upgrade the AWS Load Balancer Controller (IRSA) in kube-system
 	helm repo add eks https://aws.github.io/eks-charts --force-update >/dev/null
 	kubeconform -strict -summary -kubernetes-version $(KUBE_VERSION) $(LBC_DIR)/serviceaccount.yaml
 	helm template aws-load-balancer-controller eks/aws-load-balancer-controller --version $(LBC_VERSION) \
 		-n kube-system -f $(LBC_DIR)/values.yaml --include-crds | $(KUBECONFORM) -skip CustomResourceDefinition
-	kubectl apply -f $(LBC_DIR)/serviceaccount.yaml
+	@[ -n "$(AWS_ACCOUNT_ID)" ] || { echo "Could not read the AWS account ID; pass AWS_ACCOUNT_ID=..." >&2; exit 1; }
+	sed 's/<AWS_ACCOUNT_ID>/$(AWS_ACCOUNT_ID)/' $(LBC_DIR)/serviceaccount.yaml | kubectl apply -f -
 	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller --version $(LBC_VERSION) \
 		-n kube-system -f $(LBC_DIR)/values.yaml --wait --timeout 5m
 
