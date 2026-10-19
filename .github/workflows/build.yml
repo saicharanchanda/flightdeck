@@ -77,7 +77,7 @@ jobs:
             type=raw,value=${{ steps.vars.outputs.sha }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # PRs build only: fork PRs never get packages:write, and PR images
       # would clutter the registry.
@@ -118,7 +118,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build for scanning (from cache)
         uses: docker/build-push-action@v6
