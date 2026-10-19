@@ -100,3 +100,59 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # Rebuilds each image from the cache the image job just warmed (so PRs,
+  # which don't push, are scanned too). Fails on CRITICAL vulnerabilities
+  # that have a fix; every finding goes to code scanning on pushes to main.
+  scan:
+    name: scan (${{ matrix.service }})
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [gateway, flights, notifier]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for scanning (from cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/Dockerfile
+          build-args: SERVICE=${{ matrix.service }}
+          load: true
+          push: false
+          tags: flightdeck-${{ matrix.service }}:scan
+          cache-from: type=gha,scope=${{ matrix.service }}
+
+      - name: Trivy — fail on fixable CRITICAL
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: flightdeck-${{ matrix.service }}:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Trivy — full report (SARIF)
+        if: always() && github.event_name == 'push'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: flightdeck-${{ matrix.service }}:scan
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Upload to code scanning
+        if: always() && github.event_name == 'push'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}

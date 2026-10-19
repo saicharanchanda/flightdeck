@@ -1,0 +1,30 @@
+# Weekly dependency updates. Minor and patch bumps are grouped into one PR
+# per ecosystem; majors come separately so they can be reviewed on their own.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directories:
+      - /libs/svckit
+      - /apps/gateway
+      - /apps/flights
+      - /apps/notifier
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps(go)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps(actions)"
