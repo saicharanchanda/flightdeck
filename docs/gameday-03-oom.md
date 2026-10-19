@@ -1,26 +1,28 @@
 # Game day 03 — OOMKill
 
-**Date:** 2026-10-18 · **Cluster:** eks-practice (us-east-1) ·
+**Date:** 2026-10-18, Step C on 2026-10-19 · **Cluster:** eks-practice (us-east-1) ·
 **Fault:** lower the flights container memory limit until it is OOMKilled ·
 **Load:** k6 `loadtest/k6/baseline.js`, 20 iterations/s (150/s during the spike step)
 
-> **Status: partly done.** The kill, the crash loop, the alert and recovery
-> were all observed. **Step C — the same tight limit *with* `GOMEMLIMIT`, to
-> isolate the GC's role — has not been run yet.** It's listed under
-> [Still to do](#still-to-do). Game day 04 was started before it.
-
 ## Outcome in one paragraph
 
-The Go runtime really doesn't see the container's memory limit:
-`go_gc_gomemlimit_bytes` read `math.MaxInt64`. But that wasn't what killed
-flights. Its memory is tiny and flat (≈ 8Mi, and **unchanged at 7.5× the
-traffic**), so the 32Mi limit I set first **never killed it**, not even under a
-150 req/s spike. It died only when the limit went *below* its normal working
-set: 8Mi gave a sporadic kill; 6Mi gave a crash loop within a minute, with
-kubelet back-off doubling to its 5-minute cap. The crash-loop alert fired
-**10 minutes after the loop began**, before the SLO page did. Meanwhile the
-gateway mostly **hung for its full 5s timeout** (504) instead of failing fast.
-The chart now sets `GOMEMLIMIT` to 90% of every container's limit.
+The Go runtime doesn't see the container's memory limit:
+`go_gc_gomemlimit_bytes` read `math.MaxInt64`. At a 32Mi limit that didn't
+matter. flights' memory is small and flat (≈ 8Mi, and **unchanged at 7.5× the
+traffic**), so it never got close, not even under a 150 req/s spike. Tighter
+limits killed it: 8Mi once, 6Mi in a crash loop within a minute (back-off
+doubling to the 5-minute cap). The crash-loop alert fired **10 minutes into the
+loop, before the SLO page**, and the gateway mostly **hung for its 5s timeout**
+(504). Then the A/B: **the same 6Mi limit with `GOMEMLIMIT` set ran 10 minutes
+with 0 restarts, against 12 without it.** The ~8Mi "floor" was mostly heap the
+unaware GC chose to keep; told the limit, the GC held the heap at 1.4Mi. The
+price was ~17× the CPU on the busier pod and 2× the latency. The chart now
+sets `GOMEMLIMIT` to 90% of every container's limit.
+
+> **Correction (2026-10-19).** Until Step C, this writeup said Go's
+> unawareness of the limit "wasn't what killed flights", because I assumed
+> the ~8Mi working set was a floor. Step C disproved that: at 6Mi, the
+> unaware GC is exactly what killed it.
 
 ## Prerequisite: the notifier "restart" at 13:49Z
 
@@ -88,6 +90,39 @@ Prediction written 17:47:38Z, before inspecting flights' memory or changing anyt
 | 18:27 | `GatewayAvailabilityFastBurn` **fires — after the fix**: the 1h window crossed 14.4× only once the outage was over |
 | 18:27:29 | `go_gc_gomemlimit_bytes` now 120795955 (flights, gateway), 60397977 (notifier) |
 | 18:28:30 | flights 7.4–7.6Mi of 128Mi, gateway 0 errors |
+| *2026-10-19* | **Step C** (times are server/Kubernetes clock — the workstation clock had drifted 606s behind overnight) |
+| 05:53:19 | k6 20 iterations/s for 20m |
+| 05:54:42 | **Step C:** flights request + limit **6Mi** with `GOMEMLIMIT` = **5662310** (90%, chart default), chaos enabled exactly as in B2 (revision 13). Runtime confirms `go_gc_gomemlimit_bytes` = 5662310 |
+| 05:54:42–06:04:42 | **0 restarts on either pod.** Peak working set **4.2Mi / 4.9Mi** of 6Mi; heap in use 1.3–1.4Mi; gateway 10,656 × 200, 1,222 × 202, **0 × 5xx** |
+| 06:05 | Restore: committed defaults with `GOMEMLIMIT` (revision 14), k6 stopped |
+
+### Step C — A/B with and without `GOMEMLIMIT`
+
+Same limit (6Mi request and limit), same load (k6 20 req/s), same chaos
+setting, both counted over the 10 minutes from pod creation with
+`max_over_time(kube_pod_container_status_restarts_total[10m])`:
+
+| | **B2** — no `GOMEMLIMIT` (2026-10-18 18:11:21Z) | **C** — `GOMEMLIMIT=5662310` (2026-10-19 05:54:42Z) |
+|---|---|---|
+| Restarts (2 pods, 10 min) | **12** (6 + 6) | **0** (0 + 0) |
+| Peak working set | above 6Mi (killed; 30s scrapes saw 5.1–5.6Mi) | **4.2 / 4.9Mi** |
+| Heap in use | 2–4Mi before each kill | **1.3–1.4Mi** |
+| GC cycles per minute | ~1.6 (as at 32Mi) | **4,778** / 128 |
+| flights CPU per pod | ~4.5m | **76m** / 1.7m (limit 250m; throttling negligible) |
+| flights mean latency | 0.70ms | **1.47ms** |
+| Gateway p99 | 5ms → 5s once crash-looping | **14.7ms** |
+| Gateway 5xx | 1,109 × 502 + 9,725 × 504 | **0** |
+
+The asymmetry between the two pods (4,778 vs 128 GC/min) follows their share
+of traffic: the gateway's keep-alive connections spread unevenly across
+replicas (game day 02). That's inferred, not measured here.
+
+**What it shows:** without the limit, the GC paces on `GOGC=100` alone and
+lets the heap grow to ~2× live plus overhead, which at 6Mi is fatal. With
+`GOMEMLIMIT` the GC collects as often as needed to stay under the limit:
+here up to ~80 times a second, for a few percent of a core. At this tight a
+limit that's a soft degradation instead of a crash loop. At a sane limit
+(128Mi) `GOMEMLIMIT` costs nothing until memory actually approaches it.
 
 📸 **Screenshot:** *Flightdeck — Platform*, "Pod restarts (per 15m)" bars 18:10–18:26.
 
@@ -126,10 +161,12 @@ sum by (status) (rate(http_requests_total{namespace="flightdeck", service="gatew
 
 ## Root cause
 
-The memory limit was set below flights' steady-state working set (~7–8Mi: Go
-runtime, binary, pgx pool, a 3–4Mi heap). The kernel killed the container
-(SIGKILL, exit 137) each time usage reached the limit, typically within a
-minute of starting.
+The memory limit was set below the working set that an **unaware** Go GC
+lets flights reach (~7–8Mi: runtime, binary, pgx pool, and a 3–4Mi heap paced
+by `GOGC=100` alone). The kernel killed the container (SIGKILL, exit 137) each
+time usage reached the limit, typically within a minute of starting. With
+`GOMEMLIMIT` the same process fits in ~4–5Mi (Step C), so at 6–8Mi the missing
+`GOMEMLIMIT` was the cause, and the tight limit the trigger.
 
 ## Remediation
 
@@ -147,12 +184,13 @@ pacing on `GOGC` alone. Verified in the runtime after deploy:
    in flight at once. The hypothesis that the GC, unaware of the limit, grows
    the heap past it needs a workload whose heap actually grows (a cache,
    large responses, a batch) — this one doesn't.
-2. **So "Go isn't aware of the limit" is true but wasn't the killer here.**
-   The runtime fact is proved (`MaxInt64`) and fixed (`GOMEMLIMIT`). Whether
-   `GOMEMLIMIT` would have *prevented* the kills at 6–8Mi is exactly Step C,
-   not yet run. My expectation: it helps at 8Mi (sporadic, GC-timing-dependent
-   kills) and can't help at 6Mi (below the runtime's own floor: non-heap
-   memory doesn't shrink when the GC works harder).
+2. **My expectation for Step C was wrong.** Before running it I wrote that
+   `GOMEMLIMIT` would help at 8Mi but "can't help at 6Mi (below the runtime's
+   own floor)". It did help at 6Mi: 12 restarts → 0. I had read the observed
+   ~8Mi working set as a fixed floor; it was mostly heap the unaware GC
+   allowed. Told the limit, the GC held the heap at 1.4Mi and the process at
+   4–5Mi. The lesson for sizing: a Go service's *observed* memory without
+   `GOMEMLIMIT` tells you what the GC chose, not what it needs.
 3. **The gateway hung instead of failing fast** (P6 wrong). During the crash
    loop, 90% of the gateway's errors were 5s timeouts, `awaiting headers`:
    the TCP connection to a flights pod succeeded, but no response came. Most
@@ -182,9 +220,8 @@ pacing on `GOGC` alone. Verified in the runtime after deploy:
   `ResponseHeaderTimeout` (e.g. 1s for a ~1ms read) and a circuit breaker
   (see game day 04).
 - **Faster SLO page for total outages** — a 30×/30m + 5m tier.
-
-## Still to do
-
-- **Step C:** redeploy at 6Mi (and 8Mi) **with** `GOMEMLIMIT` and compare
-  restart counts over the same 10 minutes, to measure the GC's contribution
-  instead of inferring it.
+- **Watch the GC, not only memory,** once `GOMEMLIMIT` is in place: a service
+  pinned at its limit doesn't die any more, it burns CPU collecting.
+  `rate(go_gc_duration_seconds_count[5m])` far above baseline, or
+  `go_gc_gomemlimit_bytes - go_memstats_heap_inuse_bytes` near zero, is the new
+  early warning that the limit is too low.

@@ -85,6 +85,18 @@ sequenceDiagram
 
 Game days run with a k6 load generator inside the cluster (`make load`, 20 req/s, 70% lookups / 20% boards / 10% subscribes). Each writeup has a written-down prediction, a timestamped timeline, every PromQL and LogQL query used, and a section on what didn't go as expected. The charts below are rendered from the metrics Prometheus recorded during each run (`scripts/render-gameday-charts.ps1`).
 
+#### Screenshots
+
+Captured from the live cluster before it was torn down.
+
+| | |
+|---|---|
+| ![Flightdeck RED dashboard during game day 01](docs/img/screenshot-01-red-gameday01.png)<br>**RED, game day 01** — burn-rate gauges in the red | ![Flightdeck RED dashboard during game day 02](docs/img/screenshot-02-red-gameday02.png)<br>**RED, game day 02** — gateway latency at ~0.8s, flights flat |
+| ![Flightdeck RED dashboard during game day 03](docs/img/screenshot-03-red-gameday03.png)<br>**RED, game day 03** — 504s while flights crash-loops | ![Flightdeck RED dashboard during game day 04](docs/img/screenshot-04-red-gameday04.png)<br>**RED, game day 04** — 100% errors while Postgres is at zero |
+| ![Flightdeck Platform dashboard over 24 hours](docs/img/screenshot-05-platform-24h.png)<br>**Platform, 24h** — requests vs allocatable, restarts, PVC usage | ![Grafana Explore with Loki logs and the request_id link](docs/img/screenshot-06-loki-explore.png)<br>**Loki in Grafana** — gateway JSON logs; `request_id` as a link |
+| ![Prometheus targets, all up](docs/img/screenshot-07-prometheus-targets.png)<br>**Prometheus targets** — every service UP | ![Prometheus alerts with the SLO rules loaded](docs/img/screenshot-08-prometheus-alerts.png)<br>**Prometheus alerts** — the SLO and platform rules |
+| ![API response through the ALB](docs/img/screenshot-09-api-via-alb.png)<br>**The API through the ALB** — `/api/flights` | |
+
 A pattern across all four: **SLO alerts arrive late.** Their long windows are diluted by the clean traffic before each fault: in three of four runs an SLO alert fired only *after* the fix (the ticket in 01 and 02, the page in 03), and in 02 the page never fired at all. Where a cause-specific alert existed (03's crash loop) it fired first; where none existed (04's Postgres) nothing pointed at the cause.
 
 ### 02 — Latency injection: the autoscaler wanted to scale *in* ⭐
@@ -111,9 +123,9 @@ Postgres scaled to 0 for 13 minutes. flights' `/readyz` really does ping the dat
 
 → [docs/gameday-04-dependency.md](docs/gameday-04-dependency.md) — readiness semantics for shared dependencies, a timeout budget, circuit breaking, and the alert that should have said "PostgreSQL is down".
 
-### 03 — OOMKill: Go ignores the cgroup limit — but that isn't what killed it
+### 03 — OOMKill: Go ignores the cgroup limit, and `GOMEMLIMIT` turned 12 restarts into 0
 
-`go_gc_gomemlimit_bytes` read **`math.MaxInt64`**: without `GOMEMLIMIT`, Go's GC has no idea it's in a 32Mi container. But flights' memory is ~8Mi and **flat even at 7.5× traffic**, so 32Mi and a 150 req/s spike never killed it. It died only when the limit went below its working set: 8Mi → one kill; 6Mi → a crash loop within a minute, back-off doubling to the 5-minute cap, and `FlightdeckPodCrashLooping` firing 10 minutes in — before the SLO page. The chart now sets `GOMEMLIMIT` to 90% of every container's limit. The A/B run with it at the same tight limit is still to do.
+`go_gc_gomemlimit_bytes` read **`math.MaxInt64`**: without `GOMEMLIMIT`, Go's GC has no idea it's in a container. At 32Mi that didn't matter — flights sits at ~8Mi, **flat even at 7.5× traffic**. At 6Mi it crash-looped within a minute (back-off doubling to the 5-minute cap; `FlightdeckPodCrashLooping` fired 10 minutes in, before the SLO page; the gateway hung for 5s on most requests). Then the A/B: **the same 6Mi limit with `GOMEMLIMIT` ran 10 minutes with 0 restarts, against 12 without.** The "~8Mi floor" was mostly heap the unaware GC chose to keep; told the limit, it held the heap at 1.4Mi — at the price of ~17× the CPU on the busier pod and 2× latency. The chart now sets `GOMEMLIMIT` to 90% of every limit. (My first version of this writeup said the unaware GC *wasn't* the killer; the A/B proved it was — the correction is dated in the doc.)
 
 ![Game day 03: flights working set stays flat while the limit steps down; restarts only at 6Mi](docs/img/gameday-03-oom.svg)
 
@@ -125,7 +137,7 @@ Postgres scaled to 0 for 13 minutes. flights' `/readyz` really does ping the dat
 
 Bugs found by operating the system, not by reading it. Each is fixed, or documented where the fix is a design change.
 
-- **The Go runtime doesn't read the container's memory limit.** `go_gc_gomemlimit_bytes` = `math.MaxInt64` in every pod: the GC paced on `GOGC=100` with no idea a 6Mi limit existed. The chart now derives `GOMEMLIMIT` = 90% of each container's limit at render time (`goMemLimit.percent`), verified in the runtime afterwards (120795955 for 128Mi). Game day 03 also showed the limit of this fix: a service whose heap doesn't grow can't be saved from a limit below its floor.
+- **The Go runtime doesn't read the container's memory limit.** `go_gc_gomemlimit_bytes` = `math.MaxInt64` in every pod: the GC paced on `GOGC=100` with no idea a 6Mi limit existed. The chart now derives `GOMEMLIMIT` = 90% of each container's limit at render time (`goMemLimit.percent`), verified in the runtime afterwards (120795955 for 128Mi). In game day 03's A/B at a 6Mi limit it took restarts from 12 to 0. Its failure mode changes too: a Go service pinned at its limit no longer dies, it burns CPU on GC — so GC rate becomes the early warning.
 - **An honest readiness probe on a shared dependency empties the Service.** flights' `/readyz` checks Postgres, correctly; when Postgres died every replica failed it at once, so clients lost flights' precise 503 and got the gateway's generic 504 instead. Readiness should mean "this pod can serve and another couldn't"; shared-dependency failure should be a fast 503 from a Ready pod.
 - **No timeout means the caller's timeout.** flights' DB calls inherited the gateway's 5s context, so a dead database turned into 5s queues inside flights and hundreds of parked goroutines in the gateway. Each hop needs its own budget (500ms for a 1ms lookup).
 - **`route="unmatched"` hides middleware failures.** The access-log/metrics middleware reads chi's route pattern *after* the handler runs. Chaos (and any middleware that rejects early) answers before routing, so those requests carry no route. During game day 01 that was a useful clue; in a real incident an auth or rate-limit rejection would be just as anonymous in the RED-by-route view. Fix: middleware that writes a 5xx should log a `reason`.
@@ -158,7 +170,27 @@ Bugs found by operating the system, not by reading it. Each is fixed, or documen
 
 ## Quickstart
 
-Prerequisites: an EKS cluster with the `eks-pod-identity-agent` add-on, `kubectl`, `helm`, `kubeconform`, `aws`, `make`. IAM setup (OIDC provider, both roles, subnet tags) is recorded with exact commands in [infra/iam/README.md](infra/iam/README.md).
+From an empty AWS account to the full stack. Tools: `aws` (v2), `eksctl` ≥ 0.231, `kubectl`, `helm` 4, `kubeconform`, `make`, `curl`.
+Images are pulled from the public GHCR packages; to use your own, fork the repo (CI publishes to `ghcr.io/<you>/flightdeck-*`) and set `image.registry` in `charts/flightdeck/values.yaml`.
+
+**1. Cluster** — EKS 1.36, 2 × m7i-flex.large, public subnets, no NAT, OIDC provider, all add-ons including the EBS CSI driver on Pod Identity ([`infra/cluster.yaml`](infra/cluster.yaml)). About 20 minutes.
+
+```bash
+export AWS_REGION=us-east-1 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+aws iam create-policy --policy-name eks-practice-AWSLoadBalancerController \
+  --policy-document file://infra/iam/aws-load-balancer-controller-policy.v3.6.0.json
+sed "s/<AWS_ACCOUNT_ID>/$AWS_ACCOUNT_ID/" infra/cluster.yaml > /tmp/cluster.yaml
+eksctl create cluster -f /tmp/cluster.yaml
+```
+
+**2. Storage** — gp3 as the default StorageClass:
+
+```bash
+kubectl apply -f infra/k8s/storageclass-gp3.yaml
+kubectl annotate storageclass gp2 storageclass.kubernetes.io/is-default-class=false --overwrite
+```
+
+**3. Platform and app** — every install target runs `helm template | kubeconform -strict` first:
 
 ```bash
 make platform-lbc                 # AWS Load Balancer Controller (IRSA)
@@ -171,7 +203,9 @@ make observability                # SLO rules + dashboards
 make load RATE=20 DURATION=10m    # k6 in-cluster
 ```
 
-Every install target runs `helm template | kubeconform -strict` first. URLs for everything are in [docs/endpoints.md](docs/endpoints.md); on Windows, `scripts/open-consoles.ps1` port-forwards and opens them all.
+URLs for everything are in [docs/endpoints.md](docs/endpoints.md); on Windows, `scripts/open-consoles.ps1` port-forwards and opens them all. The IAM pieces `eksctl` creates are documented with the equivalent `aws` commands in [infra/iam/README.md](infra/iam/README.md) (account and OIDC IDs redacted as placeholders).
+
+**4. Teardown** — [docs/teardown.md](docs/teardown.md): Ingresses first and wait for the ALB to go, then releases and PVCs, then the cluster, then an orphan sweep (EC2, EBS, EIPs, load balancers, target groups, security groups, ECR, log groups, IAM roles and policies, the OIDC provider).
 
 ### Make targets
 
@@ -206,6 +240,10 @@ Every install target runs `helm template | kubeconform -strict` first. URLs for 
 
 ---
 
+### CI
+
+`.github/workflows/build.yml`: `go vet` + `go test` on all four modules and a check that the chart's SQL copy matches `db/`; then per service an image build pushed to GHCR (short-SHA tag, plus `main`; never `latest`); then a **Trivy** scan of each image that fails on fixable CRITICAL vulnerabilities and uploads the full report to GitHub code scanning. Dependabot (`.github/dependabot.yml`) opens weekly grouped updates for the Go modules and the Actions.
+
 ## Cost
 
 Approximate on-demand list prices in us-east-1 for what ran. **Actual billed: $0.00** — the account's credits covered it (Cost Explorer, month to date, 2026-10-18).
@@ -221,3 +259,7 @@ Approximate on-demand list prices in us-east-1 for what ran. **Actual billed: $0
 | **Total** | | **≈ $0.36/h ≈ $8.60/day** |
 
 Resource budget inside the cluster (requests): the app release is 450m CPU / 800Mi at minimum scale; with the platform the cluster requests ~2.1 of 3.9 CPUs and ~4.1 of 13.9 GiB. Breakdown in [docs/journal.md](docs/journal.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

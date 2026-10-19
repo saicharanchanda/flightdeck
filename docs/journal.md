@@ -120,9 +120,26 @@ charts rendered from recorded Prometheus data.
 - Recovery 30.5s, no restarts.
 - Open question: why the gateway kept hanging after flights left the Service.
 
+## 2026-10-19
+
+**~11:13** (05:43Z) — *Broke:* the workstation clock had drifted **606s behind**
+overnight; AWS rejected signed requests ("Signature expired"). Times below and
+in game day 03 Step C use the server/Kubernetes clock. The Prometheus
+port-forward had also died with the console windows; restarted.
+
+**11:24–11:35** (05:54–06:05Z) — Game day 03 **Step C**: 6Mi **with** `GOMEMLIMIT`.
+- **0 restarts in 10 min vs 12 without.**
+- Heap 1.4Mi, peak working set 4.9Mi.
+- Cost: up to 4,778 GC/min and 76m CPU on one pod; latency 0.7 → 1.5ms.
+- *Broke (my prediction):* "can't help at 6Mi". It did; the "floor" was GC slack.
+  Writeup corrected with a dated note.
+
+**Repo finish** — eksctl `infra/cluster.yaml` (dry-run clean), `docs/teardown.md`,
+MIT license, account and OIDC IDs redacted to placeholders, Trivy scan job,
+Dependabot.
+
 ## Not done yet
 
-- Game day 03 Step C: same tight limit with `GOMEMLIMIT`, to measure the GC's share.
 - Game day 04's open question (httptrace + conntrack on a repeat).
 - None of the README's "what I'd change at production scale" items is implemented; they're the backlog.
 
