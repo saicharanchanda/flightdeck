@@ -85,18 +85,6 @@ sequenceDiagram
 
 Game days run with a k6 load generator inside the cluster (`make load`, 20 req/s, 70% lookups / 20% boards / 10% subscribes). Each writeup has a written-down prediction, a timestamped timeline, every PromQL and LogQL query used, and a section on what didn't go as expected. The charts below are rendered from the metrics Prometheus recorded during each run (`scripts/render-gameday-charts.ps1`).
 
-#### Screenshots
-
-Captured from the live cluster before it was torn down.
-
-| | |
-|---|---|
-| ![Flightdeck RED dashboard during game day 01](docs/img/screenshot-01-red-gameday01.png)<br>**RED, game day 01** — burn-rate gauges in the red | ![Flightdeck RED dashboard during game day 02](docs/img/screenshot-02-red-gameday02.png)<br>**RED, game day 02** — gateway latency at ~0.8s, flights flat |
-| ![Flightdeck RED dashboard during game day 03](docs/img/screenshot-03-red-gameday03.png)<br>**RED, game day 03** — 504s while flights crash-loops | ![Flightdeck RED dashboard during game day 04](docs/img/screenshot-04-red-gameday04.png)<br>**RED, game day 04** — 100% errors while Postgres is at zero |
-| ![Flightdeck Platform dashboard over 24 hours](docs/img/screenshot-05-platform-24h.png)<br>**Platform, 24h** — requests vs allocatable, restarts, PVC usage | ![Grafana Explore with Loki logs and the request_id link](docs/img/screenshot-06-loki-explore.png)<br>**Loki in Grafana** — gateway JSON logs; `request_id` as a link |
-| ![Prometheus targets, all up](docs/img/screenshot-07-prometheus-targets.png)<br>**Prometheus targets** — every service UP | ![Prometheus alerts with the SLO rules loaded](docs/img/screenshot-08-prometheus-alerts.png)<br>**Prometheus alerts** — the SLO and platform rules |
-| ![API response through the ALB](docs/img/screenshot-09-api-via-alb.png)<br>**The API through the ALB** — `/api/flights` | |
-
 A pattern across all four: **SLO alerts arrive late.** Their long windows are diluted by the clean traffic before each fault: in three of four runs an SLO alert fired only *after* the fix (the ticket in 01 and 02, the page in 03), and in 02 the page never fired at all. Where a cause-specific alert existed (03's crash loop) it fired first; where none existed (04's Postgres) nothing pointed at the cause.
 
 ### 02 — Latency injection: the autoscaler wanted to scale *in* ⭐
@@ -246,17 +234,26 @@ URLs for everything are in [docs/endpoints.md](docs/endpoints.md); on Windows, `
 
 ## Cost
 
-Approximate on-demand list prices in us-east-1 for what ran. **Actual billed: $0.00** — the account's credits covered it (Cost Explorer, month to date, 2026-10-18).
+Real usage from Cost Explorer (`RECORD_TYPE=Usage`, us-east-1 only), queried 2026-10-19 after teardown. The control plane billed ~26 hours, until it was deleted at 2026-10-19 10:09Z. **Billed: $0.00.** The account's credits covered all of it: $105.50 remaining as of 2026-10-19, after $5.71 of credits had been applied.
 
-| Item | Quantity | ≈ per hour |
+| Line | Quantity | Cost |
 |---|---|---|
-| EKS control plane | 1 cluster | $0.100 |
-| EC2 m7i-flex.large | 2 nodes | $0.192 |
-| ALB (hourly + minimal LCU) | 1 | $0.025 |
-| Public IPv4 addresses | 2 nodes + 5 ALB | $0.035 |
-| EBS gp3 | 69 GiB (2 × 20 node roots, 29 PVCs) | $0.008 |
+| EC2 m7i-flex.large | 26 instance-hours | $2.49 |
+| EKS control plane | 16.1 cluster-hours | $1.61 |
+| Public IPv4 addresses | 81.4 address-hours | $0.41 |
+| ALB | 11 LB-hours (LCU ≈ $0) | $0.25 |
+| EBS gp3 | 0.74 GB-month | $0.06 |
+| Data transfer (regional) | 4.2 GB | $0.03 |
+| Cost Explorer API | 2 requests | $0.02 |
 | NAT gateway | none (public subnets) | $0 |
-| **Total** | | **≈ $0.36/h ≈ $8.60/day** |
+| **Posted (2026-10-18 UTC)** | | **$4.87** |
+| Not yet posted (2026-10-19 00:00–10:09Z), from the same rates | ~10 h | ≈ $3.45 |
+| **Total for the project** | | **≈ $8.30** |
+
+Cost Explorer posts with about a day of lag, so the 2026-10-19 hours weren't in
+it when this was written. The run rate came out to ≈ $0.30/h. The account-wide
+month-to-date figure ($5.71) also includes $0.84 in ap-south-2 from an
+unrelated project. Teardown details: [docs/teardown.md](docs/teardown.md).
 
 Resource budget inside the cluster (requests): the app release is 450m CPU / 800Mi at minimum scale; with the platform the cluster requests ~2.1 of 3.9 CPUs and ~4.1 of 13.9 GiB. Breakdown in [docs/journal.md](docs/journal.md).
 

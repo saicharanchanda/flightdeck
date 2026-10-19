@@ -69,12 +69,6 @@
   .card.pending { border-style: dashed; }
   .card.pending .placeholder { aspect-ratio: 780 / 384; display: grid; place-items: center; color: var(--muted); background: repeating-linear-gradient(135deg, #0d1117 0 12px, #10151c 12px 24px); border-bottom: 1px dashed var(--line); font-size: 14px; }
 
-  /* Screenshots */
-  .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-  .shots figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-  .shots img { width: 100%; height: auto; display: block; border-bottom: 1px solid var(--line); }
-  .shots figcaption { padding: 10px 14px; color: #c9d1d9; font-size: 14px; }
-  #screenshots:not(:has(figure)) { display: none; }
 
   /* Stack */
   .stack { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
@@ -94,7 +88,7 @@
   @media (max-width: 640px) {
     header.hero { padding: 48px 0 28px; }
     .stats { grid-template-columns: 1fr 1fr; }
-    .cards, .stack, .shots { grid-template-columns: 1fr; }
+    .cards, .stack { grid-template-columns: 1fr; }
     .card.lead { grid-column: auto; }
     .hint { display: block; }
     section { padding: 40px 0; }
@@ -214,24 +208,6 @@ flowchart TB
   </div>
 </section>
 
-<section id="screenshots">
-  <div class="wrap">
-    <h2>Screenshots</h2>
-    <p class="sub">Captured from the live cluster before it was torn down.</p>
-    <div class="shots">
-      <figure><img src="img/screenshot-01-red-gameday01.png" alt="Flightdeck RED dashboard during game day 01" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>RED, game day 01</b> — burn-rate gauges in the red</figcaption></figure>
-      <figure><img src="img/screenshot-02-red-gameday02.png" alt="Flightdeck RED dashboard during game day 02" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>RED, game day 02</b> — gateway at ~0.8s, flights flat</figcaption></figure>
-      <figure><img src="img/screenshot-03-red-gameday03.png" alt="Flightdeck RED dashboard during game day 03" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>RED, game day 03</b> — 504s while flights crash-loops</figcaption></figure>
-      <figure><img src="img/screenshot-04-red-gameday04.png" alt="Flightdeck RED dashboard during game day 04" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>RED, game day 04</b> — 100% errors, Postgres at zero</figcaption></figure>
-      <figure><img src="img/screenshot-05-platform-24h.png" alt="Flightdeck Platform dashboard over 24 hours" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>Platform, 24h</b> — requests vs allocatable, restarts, PVCs</figcaption></figure>
-      <figure><img src="img/screenshot-06-loki-explore.png" alt="Grafana Explore showing gateway JSON logs from Loki with a request_id link" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>Loki in Grafana</b> — <code>request_id</code> as a link</figcaption></figure>
-      <figure><img src="img/screenshot-07-prometheus-targets.png" alt="Prometheus targets page with all services up" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>Prometheus targets</b> — every service UP</figcaption></figure>
-      <figure><img src="img/screenshot-08-prometheus-alerts.png" alt="Prometheus alerts page listing the SLO rules" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>Prometheus alerts</b> — SLO and platform rules</figcaption></figure>
-      <figure><img src="img/screenshot-09-api-via-alb.png" alt="JSON flight list returned by the API through the load balancer" loading="lazy" onerror="this.closest('figure').remove()"><figcaption><b>API through the ALB</b> — <code>/api/flights</code></figcaption></figure>
-    </div>
-  </div>
-</section>
-
 <section id="stack">
   <div class="wrap">
     <h2>Stack</h2>
@@ -271,7 +247,7 @@ flowchart TB
         <li><span>Secrets</span><span>Secret objects only</span></li>
       </ul></div>
       <div class="group"><h4>Cost</h4><ul>
-        <li><span>List price</span><span>≈ $0.36 / hour</span></li>
+        <li><span>Actual usage</span><span>≈ $8.30 for ~26 h</span></li>
         <li><span>Billed</span><span>$0 (account credits)</span></li>
         <li><span>NAT gateways</span><span>none</span></li>
       </ul></div>

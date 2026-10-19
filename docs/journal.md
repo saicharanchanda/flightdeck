@@ -138,6 +138,14 @@ port-forward had also died with the console windows; restarted.
 MIT license, account and OIDC IDs redacted to placeholders, Trivy scan job,
 Dependabot.
 
+**~14:53–16:00** (09:23–10:30Z) — [Teardown](teardown.md).
+- *Broke:* the workstation clock was off again (604s); the Windows Time service was stopped. Started it and set it to Automatic.
+- Ingresses first; the controller removed the ALB, target groups and SGs in ~2 min.
+- 3 of 5 PVCs survived `helm uninstall`. Grafana's and Loki's didn't: one is a plain manifest PVC, the other has a Delete retention policy.
+- The node role needed its instance profile removed before `delete-role`.
+- Sweep of us-east-1 and ap-south-1: empty apart from the subnet ELB tags.
+- Cost ≈ $8.30 of usage, $0 billed.
+
 ## Not done yet
 
 - Game day 04's open question (httptrace + conntrack on a repeat).
