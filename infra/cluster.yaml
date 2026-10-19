@@ -1,0 +1,97 @@
+# eksctl config that recreates eks-practice as it was built:
+#   EKS 1.36 in us-east-1, 2 x m7i-flex.large (min 1, max 3), nodes in public
+#   subnets, no NAT gateway, IAM OIDC provider for IRSA, and the add-ons that
+#   were installed, including the EBS CSI driver on EKS Pod Identity.
+#
+#   eksctl create cluster -f infra/cluster.yaml
+#
+# Before creating it, the AWS Load Balancer Controller policy must exist
+# (its role is created here, trusted via IRSA):
+#   aws iam create-policy --policy-name eks-practice-AWSLoadBalancerController \
+#     --policy-document file://infra/iam/aws-load-balancer-controller-policy.v3.6.0.json
+# and <AWS_ACCOUNT_ID> below replaced with your account ID (README Quickstart).
+#
+# One deliberate difference: the original cluster used the account's DEFAULT
+# VPC (public subnets in us-east-1a/b/c/d/f). Subnet IDs are account-specific,
+# so this creates a dedicated VPC with the same shape instead: public subnets
+# for the nodes and the ALB, no NAT. To reuse a default VPC, replace the vpc:
+# block with the commented one at the bottom.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: eks-practice
+  region: us-east-1
+  version: "1.36"
+  tags:
+    project: flightdeck
+
+# Registers the cluster's OIDC issuer as an IAM identity provider (IRSA).
+iam:
+  withOIDC: true
+  serviceAccounts:
+    # IRSA role for the AWS Load Balancer Controller. roleOnly: the
+    # ServiceAccount itself comes from platform/aws-load-balancer-controller/
+    # serviceaccount.yaml (applied by `make platform-lbc`).
+    - metadata:
+        name: aws-load-balancer-controller
+        namespace: kube-system
+      roleName: eks-practice-aws-load-balancer-controller
+      roleOnly: true
+      attachPolicyARNs:
+        - arn:aws:iam::<AWS_ACCOUNT_ID>:policy/eks-practice-AWSLoadBalancerController
+
+vpc:
+  cidr: 10.42.0.0/16
+  nat:
+    gateway: Disable # nodes have public IPs; no NAT gateway (~$33/month saved)
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: false
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: eks-pod-identity-agent
+  - name: metrics-server # the gateway HPA needs it
+  - name: eks-node-monitoring-agent
+  # EBS CSI driver on EKS Pod Identity (not IRSA): eksctl creates the role
+  # trusted by pods.eks.amazonaws.com and the association for the SA.
+  - name: aws-ebs-csi-driver
+    version: v1.67.0-eksbuild.1
+    podIdentityAssociations:
+      - namespace: kube-system
+        serviceAccountName: ebs-csi-controller-sa
+        roleName: eks-practice-ebs-csi-driver
+        permissionPolicyARNs:
+          - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+managedNodeGroups:
+  - name: ng-public
+    instanceType: m7i-flex.large
+    amiFamily: AmazonLinux2023
+    desiredCapacity: 2
+    minSize: 1
+    maxSize: 3
+    volumeSize: 20
+    volumeType: gp3
+    privateNetworking: false # public subnets, public IPs, no NAT needed
+    labels:
+      project: flightdeck
+    tags:
+      project: flightdeck
+
+# --- Alternative: reuse the account's default VPC, as the original did ---------
+# eksctl tags these subnets for the cluster; also tag them
+# kubernetes.io/role/elb=1 for internet-facing ALBs (infra/iam/README.md).
+#
+# vpc:
+#   id: vpc-xxxxxxxxxxxxxxxxx
+#   subnets:
+#     public:
+#       us-east-1a: { id: subnet-xxxxxxxxxxxxxxxxx }
+#       us-east-1b: { id: subnet-xxxxxxxxxxxxxxxxx }
+#       us-east-1c: { id: subnet-xxxxxxxxxxxxxxxxx }
+#       us-east-1d: { id: subnet-xxxxxxxxxxxxxxxxx }
+#       us-east-1f: { id: subnet-xxxxxxxxxxxxxxxxx }
